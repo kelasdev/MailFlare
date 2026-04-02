@@ -706,7 +706,12 @@
           <span class="material-symbols-outlined brand-cloud-icon" aria-hidden="true">cloud</span>
           <strong>MailFlare User List</strong>
           <span class="userlist-separator" aria-hidden="true">|</span>
-          <button class="user-add-btn" on:click={openAddUserModal} title="Add User">
+          <button
+            class="user-add-btn"
+            type="button"
+            on:click|preventDefault|stopPropagation={openAddUserModal}
+            title="Add User"
+          >
             <span>Add user</span>
             <span aria-hidden="true">+</span>
           </button>
