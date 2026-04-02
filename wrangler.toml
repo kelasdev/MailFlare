@@ -9,11 +9,5 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "mailflare_db"
 database_name = "mailflare-db"
-database_id = "__CHANGE_ME_D1_DATABASE_ID__"
+database_id = "ecd12fe4-ea15-4679-8e86-3a3ef37f3080"
 migrations_dir = "./migrations"
-
-[vars]
-TELEGRAM_ALLOWED_IDS = ""
-TELEGRAM_WEBHOOK_SECRET = ""
-CF_ACCESS_TEAM_DOMAIN = ""
-CF_ACCESS_AUD = ""

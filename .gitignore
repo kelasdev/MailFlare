@@ -9,6 +9,8 @@ docs/
 .env.development
 .env.test
 .env.production
+.dev.vars
+.dev.vars.*
 scripts/
 tests/
 references/
