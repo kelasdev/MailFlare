@@ -41,6 +41,7 @@ export function parseTelegramCommand(rawText: string | undefined): TelegramComma
     "unstar",
     "archive",
     "delete",
+    "access",
     "reply"
   ]);
 

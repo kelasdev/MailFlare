@@ -1,11 +1,15 @@
 import {
+  consumeAccessCode,
   createUser,
   findUserIdByEmail,
   getStoredSettings,
   getDashboardStats,
   getEmailById,
   incrementMetric,
+  insertAccessCode,
+  insertAccessSession,
   insertInboundEmail,
+  isAccessSessionValid,
   listWorkerMetrics,
   listInboxByUser,
   listRecentEmails,
@@ -27,6 +31,10 @@ import type { EmailStatusAction, Env, RuntimeSettings } from "./types";
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8"
 };
+
+const ACCESS_SESSION_COOKIE_NAME = "mailflare_private_session";
+const ACCESS_CODE_TTL_HOURS = 24;
+const ACCESS_SESSION_TTL_SECONDS = 60 * 60 * 24;
 
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
@@ -55,12 +63,27 @@ function jsonResponse(body: unknown, status = 200): Response {
   return withSecurityHeaders(response);
 }
 
+function htmlResponse(html: string, status = 200): Response {
+  return withSecurityHeaders(
+    new Response(html, {
+      status,
+      headers: {
+        "content-type": "text/html; charset=utf-8"
+      }
+    })
+  );
+}
+
 function getPathSegments(pathname: string): string[] {
   return pathname.split("/").filter(Boolean);
 }
 
 function isPublicPath(pathname: string): boolean {
-  return pathname === "/api/telegram/webhook";
+  return (
+    pathname === "/api/telegram/webhook" ||
+    pathname === "/auth/access-denied" ||
+    pathname === "/auth/redeem"
+  );
 }
 
 function isLocalHost(hostname: string): boolean {
@@ -81,25 +104,244 @@ function statusActionFromInput(value: unknown): EmailStatusAction | null {
   return null;
 }
 
-async function authorizeRequest(request: Request, env: Env): Promise<Response | null> {
+function parseCookies(request: Request): Map<string, string> {
+  const raw = request.headers.get("cookie");
+  const map = new Map<string, string>();
+  if (!raw) return map;
+  const parts = raw.split(";");
+  for (const part of parts) {
+    const index = part.indexOf("=");
+    if (index === -1) continue;
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    if (!key) continue;
+    map.set(key, value);
+  }
+  return map;
+}
+
+function randomString(length: number): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  let out = "";
+  for (let i = 0; i < length; i += 1) {
+    out += alphabet[bytes[i] % alphabet.length];
+  }
+  return out;
+}
+
+function generateAccessCode(): string {
+  return `MF-${randomString(4)}-${randomString(4)}-${randomString(4)}`;
+}
+
+async function hashText(input: string): Promise<string> {
+  const encoded = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", encoded);
+  const hashArray = Array.from(new Uint8Array(digest));
+  return hashArray.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function expiresAtIso(hours: number): string {
+  return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+}
+
+function clientIpFromRequest(request: Request): string {
+  const cfIp = request.headers.get("cf-connecting-ip");
+  if (cfIp) return cfIp;
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) return forwarded.split(",")[0]?.trim() ?? "";
+  return "";
+}
+
+function escapeHtml(input: string): string {
+  return input
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderAccessDeniedPage(errorText?: string): string {
+  const message = errorText
+    ? `<p class="hint error">${escapeHtml(errorText)}</p>`
+    : `<p class="hint">Area privat. Minta one-time access code lewat Telegram bot lalu masukkan di bawah.</p>`;
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MailFlare Private Zone</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: Inter, sans-serif;
+        background: radial-gradient(circle at 20% 20%, #11294a 0%, #09172c 42%, #050d19 100%);
+        color: #e8f1ff;
+      }
+      .card {
+        width: min(92vw, 460px);
+        border-radius: 16px;
+        background: rgba(15, 32, 56, 0.86);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        padding: 28px 24px;
+        box-shadow: 0 22px 60px rgba(0, 0, 0, 0.34);
+      }
+      .title {
+        margin: 0 0 8px;
+        font-size: 1.3rem;
+        font-weight: 700;
+      }
+      .hint {
+        margin: 0 0 18px;
+        color: #b8cae8;
+        font-size: 0.95rem;
+      }
+      .error {
+        color: #ffb4a0;
+      }
+      label {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 0.86rem;
+        color: #b3c6e8;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(3, 14, 28, 0.84);
+        color: #f3f7ff;
+        padding: 11px 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      button {
+        margin-top: 14px;
+        width: 100%;
+        border: none;
+        border-radius: 10px;
+        background: linear-gradient(90deg, #ff8e3a, #ff6a2d);
+        color: #131313;
+        font-weight: 700;
+        padding: 12px;
+        cursor: pointer;
+      }
+      .foot {
+        margin-top: 14px;
+        font-size: 0.78rem;
+        color: #9eb4da;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1 class="title">MailFlare Private Zone</h1>
+      ${message}
+      <form action="/auth/redeem" method="post">
+        <label for="code">One-time Access Code</label>
+        <input id="code" name="code" type="text" placeholder="MF-XXXX-XXXX-XXXX" required />
+        <button type="submit">Unlock</button>
+      </form>
+      <p class="foot">Code hanya bisa dipakai 1x dan kadaluarsa 24 jam.</p>
+    </main>
+  </body>
+</html>`;
+}
+
+function buildSessionCookie(token: string, request: Request): string {
+  const url = new URL(request.url);
+  const attributes = [
+    `${ACCESS_SESSION_COOKIE_NAME}=${token}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Strict",
+    `Max-Age=${ACCESS_SESSION_TTL_SECONDS}`
+  ];
+  if (url.protocol === "https:") {
+    attributes.push("Secure");
+  }
+  return attributes.join("; ");
+}
+
+async function isSessionAuthorized(request: Request, env: Env): Promise<boolean> {
+  const cookies = parseCookies(request);
+  const token = cookies.get(ACCESS_SESSION_COOKIE_NAME);
+  if (!token) return false;
+  const tokenHash = await hashText(token);
+  return isAccessSessionValid(env.mailflare_db, tokenHash);
+}
+
+async function isRequestAuthorized(request: Request, env: Env): Promise<boolean> {
   const url = new URL(request.url);
   const accessConfigured = Boolean(
     env.CF_ACCESS_TEAM_DOMAIN?.trim() && env.CF_ACCESS_AUD?.trim()
   );
   if (!accessConfigured && isLocalHost(url.hostname)) {
-    return null;
+    return true;
   }
 
   const token = request.headers.get("cf-access-jwt-assertion");
-  if (!token) {
-    return jsonResponse({ error: "Missing Cloudflare Access token" }, 401);
+  if (token) {
+    const result = await verifyAccessJwt(token, env);
+    if (result.ok) return true;
   }
 
-  const result = await verifyAccessJwt(token, env);
-  if (!result.ok) {
-    return jsonResponse({ error: result.message ?? "Unauthorized" }, result.status);
+  return isSessionAuthorized(request, env);
+}
+
+async function handleAccessRedeem(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") {
+    return htmlResponse(renderAccessDeniedPage(), 200);
   }
-  return null;
+
+  const form = await request.formData().catch(() => null);
+  const rawCode = String(form?.get("code") ?? "").trim().toUpperCase();
+  if (!rawCode) {
+    return htmlResponse(renderAccessDeniedPage("Kode akses wajib diisi."), 400);
+  }
+
+  const codeHash = await hashText(rawCode);
+  const codeId = await consumeAccessCode(env.mailflare_db, codeHash);
+  if (!codeId) {
+    await incrementMetric(env.mailflare_db, "private_access_code_invalid");
+    return htmlResponse(
+      renderAccessDeniedPage("Kode tidak valid / sudah dipakai / sudah kadaluarsa."),
+      401
+    );
+  }
+
+  const sessionToken = randomString(48);
+  const sessionHash = await hashText(sessionToken);
+  await insertAccessSession(env.mailflare_db, {
+    id: crypto.randomUUID(),
+    tokenHash: sessionHash,
+    codeId,
+    expiresAt: expiresAtIso(ACCESS_CODE_TTL_HOURS),
+    userAgent: request.headers.get("user-agent") ?? "",
+    clientIp: clientIpFromRequest(request)
+  });
+  await incrementMetric(env.mailflare_db, "private_access_granted");
+
+  const response = withSecurityHeaders(
+    new Response(null, {
+      status: 302,
+      headers: {
+        location: "/",
+        "set-cookie": buildSessionCookie(sessionToken, request)
+      }
+    })
+  );
+  return response;
 }
 
 async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
@@ -183,9 +425,7 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
       | { action?: string; actor?: string }
       | null;
     const action = statusActionFromInput(body?.action);
-    if (!action) {
-      return jsonResponse({ error: "Invalid action" }, 400);
-    }
+    if (!action) return jsonResponse({ error: "Invalid action" }, 400);
     const actor = (body?.actor ?? "api") as string;
     const updated = await patchEmailStatus(env.mailflare_db, emailId, action, actor);
     if (!updated) return jsonResponse({ error: "Email not found" }, 404);
@@ -254,10 +494,7 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
         ? String(body.chatId)
         : runtimeStored.defaultTelegramChatId;
     const chatId = chatIdRaw.trim();
-    if (!chatId) {
-      return jsonResponse({ error: "chatId is required" }, 400);
-    }
-
+    if (!chatId) return jsonResponse({ error: "chatId is required" }, 400);
     if (!env.TELEGRAM_BOT_TOKEN?.trim()) {
       return jsonResponse({ error: "TELEGRAM_BOT_TOKEN is not configured" }, 400);
     }
@@ -311,6 +548,7 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   const chatId = update?.message?.chat?.id ?? telegramUserId;
   const parsed = parseTelegramCommand(text);
   const payloadJson = JSON.stringify(update ?? {});
+  const webhookOrigin = new URL(request.url).origin;
 
   if (!telegramUserId || !chatId) {
     await logTelegramEvent(env.mailflare_db, {
@@ -401,7 +639,12 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
       if (!emailId) {
         await send(`Usage: /${parsed.command} <email_id>`);
       } else {
-        const updated = await patchEmailStatus(env.mailflare_db, emailId, parsed.command, "telegram-bot");
+        const updated = await patchEmailStatus(
+          env.mailflare_db,
+          emailId,
+          parsed.command,
+          "telegram-bot"
+        );
         if (!updated) {
           await send("Email not found.");
         } else {
@@ -409,6 +652,24 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
           await send(`Action ${parsed.command} applied to ${emailId}.`);
         }
       }
+    } else if (parsed.command === "access") {
+      const accessCode = generateAccessCode();
+      await insertAccessCode(env.mailflare_db, {
+        id: crypto.randomUUID(),
+        codeHash: await hashText(accessCode),
+        telegramUserId: String(telegramUserId),
+        expiresAt: expiresAtIso(ACCESS_CODE_TTL_HOURS)
+      });
+      await incrementMetric(env.mailflare_db, "private_access_code_created");
+      await send(
+        [
+          "MailFlare Private Access Code",
+          `Code: ${accessCode}`,
+          "Valid: 24 hours",
+          "One-time use: yes",
+          `Open: ${webhookOrigin}/auth/access-denied`
+        ].join("\n")
+      );
     } else if (parsed.command === "reply") {
       await send("Command /reply disabled in v1.");
     } else {
@@ -424,7 +685,8 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
           "/star <email_id>",
           "/unstar <email_id>",
           "/archive <email_id>",
-          "/delete <email_id>"
+          "/delete <email_id>",
+          "/access"
         ].join("\n")
       );
     }
@@ -465,7 +727,7 @@ async function serveFrontendAsset(request: Request, env: Env): Promise<Response>
 
   const url = new URL(request.url);
   if (url.pathname.includes(".")) {
-    return direct;
+    return withSecurityHeaders(direct);
   }
 
   const fallbackUrl = new URL(request.url);
@@ -483,9 +745,23 @@ export default {
       return handleTelegramWebhook(request, env);
     }
 
+    if (pathname === "/auth/access-denied") {
+      return htmlResponse(renderAccessDeniedPage(), 200);
+    }
+
+    if (pathname === "/auth/redeem") {
+      return handleAccessRedeem(request, env);
+    }
+
     if (!isPublicPath(pathname)) {
-      const authError = await authorizeRequest(request, env);
-      if (authError) return authError;
+      const authorized = await isRequestAuthorized(request, env);
+      if (!authorized) {
+        const isApiCall = pathname.startsWith("/api/") || pathname === "/healthz";
+        if (isApiCall || (request.method !== "GET" && request.method !== "HEAD")) {
+          return jsonResponse({ error: "Unauthorized" }, 401);
+        }
+        return htmlResponse(renderAccessDeniedPage(), 401);
+      }
     }
 
     if (pathname === "/healthz" && request.method === "GET") {
@@ -545,5 +821,3 @@ export default {
     await incrementMetric(env.mailflare_db, "scheduled_runs");
   }
 } satisfies ExportedHandler<Env>;
-
-

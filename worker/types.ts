@@ -80,6 +80,7 @@ export interface TelegramCommand {
     | "unstar"
     | "archive"
     | "delete"
+    | "access"
     | "reply"
     | "unknown";
   args: string[];

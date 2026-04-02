@@ -49,6 +49,10 @@ interface WorkerSettingRow {
   updated_at: string | null;
 }
 
+interface AccessCodeRow {
+  id: string;
+}
+
 function asBool(value: number): boolean {
   return value === 1;
 }
@@ -412,4 +416,76 @@ export async function saveStoredSettings(
       .bind(item.key, item.value)
       .run();
   }
+}
+
+export async function insertAccessCode(
+  db: D1Database,
+  input: {
+    id: string;
+    codeHash: string;
+    telegramUserId: string;
+    expiresAt: string;
+  }
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO access_codes (id, code_hash, telegram_user_id, created_at, expires_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)"
+    )
+    .bind(input.id, input.codeHash, input.telegramUserId, input.expiresAt)
+    .run();
+}
+
+export async function consumeAccessCode(db: D1Database, codeHash: string): Promise<string | null> {
+  const row = await db
+    .prepare(
+      "SELECT id FROM access_codes WHERE code_hash = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP LIMIT 1"
+    )
+    .bind(codeHash)
+    .first<AccessCodeRow>();
+  if (!row?.id) return null;
+
+  const updated = await db
+    .prepare("UPDATE access_codes SET used_at = CURRENT_TIMESTAMP WHERE id = ? AND used_at IS NULL")
+    .bind(row.id)
+    .run();
+  const changes = updated.meta.changes ?? 0;
+  if (changes < 1) return null;
+
+  return row.id;
+}
+
+export async function insertAccessSession(
+  db: D1Database,
+  input: {
+    id: string;
+    tokenHash: string;
+    codeId: string;
+    expiresAt: string;
+    userAgent: string;
+    clientIp: string;
+  }
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO access_sessions (id, token_hash, code_id, created_at, expires_at, user_agent, client_ip) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)"
+    )
+    .bind(
+      input.id,
+      input.tokenHash,
+      input.codeId,
+      input.expiresAt,
+      input.userAgent,
+      input.clientIp
+    )
+    .run();
+}
+
+export async function isAccessSessionValid(db: D1Database, tokenHash: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      "SELECT id FROM access_sessions WHERE token_hash = ? AND expires_at > CURRENT_TIMESTAMP LIMIT 1"
+    )
+    .bind(tokenHash)
+    .first<{ id: string }>();
+  return Boolean(row?.id);
 }
