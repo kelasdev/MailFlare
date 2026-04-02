@@ -28,11 +28,31 @@ const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8"
 };
 
+const SECURITY_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "no-referrer",
+  "permissions-policy": "camera=(), microphone=(), geolocation=()"
+};
+
+function withSecurityHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
+    headers.set(key, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
+  const response = new Response(JSON.stringify(body), {
     status,
     headers: JSON_HEADERS
   });
+  return withSecurityHeaders(response);
 }
 
 function getPathSegments(pathname: string): string[] {
@@ -40,7 +60,7 @@ function getPathSegments(pathname: string): string[] {
 }
 
 function isPublicPath(pathname: string): boolean {
-  return pathname === "/healthz" || pathname === "/api/telegram/webhook";
+  return pathname === "/api/telegram/webhook";
 }
 
 function isLocalHost(hostname: string): boolean {
@@ -440,7 +460,7 @@ async function serveFrontendAsset(request: Request, env: Env): Promise<Response>
 
   const direct = await env.ASSETS.fetch(request);
   if (direct.status !== 404) {
-    return direct;
+    return withSecurityHeaders(direct);
   }
 
   const url = new URL(request.url);
@@ -450,20 +470,14 @@ async function serveFrontendAsset(request: Request, env: Env): Promise<Response>
 
   const fallbackUrl = new URL(request.url);
   fallbackUrl.pathname = "/index.html";
-  return env.ASSETS.fetch(new Request(fallbackUrl.toString(), request));
+  const fallback = await env.ASSETS.fetch(new Request(fallbackUrl.toString(), request));
+  return withSecurityHeaders(fallback);
 }
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
     const { pathname } = url;
-
-    if (pathname === "/healthz" && request.method === "GET") {
-      return jsonResponse({
-        status: "ok",
-        timestamp: new Date().toISOString()
-      });
-    }
 
     if (pathname === "/api/telegram/webhook") {
       return handleTelegramWebhook(request, env);
@@ -472,6 +486,13 @@ export default {
     if (!isPublicPath(pathname)) {
       const authError = await authorizeRequest(request, env);
       if (authError) return authError;
+    }
+
+    if (pathname === "/healthz" && request.method === "GET") {
+      return jsonResponse({
+        status: "ok",
+        timestamp: new Date().toISOString()
+      });
     }
 
     if (pathname.startsWith("/api/")) {
