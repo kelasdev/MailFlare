@@ -3,7 +3,8 @@ import type { TelegramCommand } from "../types";
 interface TelegramMessagePayload {
   chat_id: string | number;
   text: string;
-  parse_mode?: "Markdown";
+  parse_mode?: "Markdown" | "MarkdownV2";
+  disable_web_page_preview?: boolean;
 }
 
 export interface TelegramWebhookInfo {

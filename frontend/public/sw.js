@@ -1,4 +1,4 @@
-const CACHE_NAME = "mailflare-static-v2";
+const CACHE_NAME = "mailflare-static-v3";
 const STATIC_ASSETS = ["/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {

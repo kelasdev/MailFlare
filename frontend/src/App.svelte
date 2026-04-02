@@ -58,14 +58,19 @@
 
   let selectedUserId = "";
   let detailEmailId = "";
+  let currentHost = "";
   let inboxSearchQuery = "";
   let userSearchQuery = "";
   let userSortMode: "az" | "created" = "az";
   let refreshingInbox = false;
+  let showAddUserModal = false;
+  let newUserEmail = "";
+  let newUserDisplayName = "";
+  let creatingUser = false;
   let telegramChatId = "";
   let testingTelegramConnection = false;
   let settingsDefaultTelegramChatId = "";
-  let settingsTelegramForwardEnabled = true;
+  let settingsTelegramForwardState: "enabled" | "disabled" = "enabled";
   let settingsTelegramForwardMode: "all_allowed" | "specific" = "all_allowed";
   let settingsTelegramForwardChatId = "";
   let telegramWebhookStatus: TelegramWebhookStatus | null = null;
@@ -129,23 +134,40 @@
     return next;
   }
 
-  async function addUser(): Promise<void> {
-    const emailInput = window.prompt("Email user baru:");
-    if (emailInput === null) return;
-    const email = emailInput.trim().toLowerCase();
-    if (!email) {
+  function openAddUserModal(): void {
+    showAddUserModal = true;
+    newUserEmail = "";
+    newUserDisplayName = "";
+    errorText = "";
+    feedbackText = "";
+  }
+
+  function closeAddUserModal(): void {
+    if (creatingUser) return;
+    showAddUserModal = false;
+  }
+
+  function handleAddUserBackdropClick(event: MouseEvent): void {
+    if (event.target !== event.currentTarget) return;
+    closeAddUserModal();
+  }
+
+  async function submitAddUser(): Promise<void> {
+    const emailInput = newUserEmail.trim().toLowerCase();
+    if (!emailInput) {
       errorText = "Email wajib diisi.";
       return;
     }
-
-    const displayNameInput = window.prompt("Display name (opsional):");
-    const displayName =
-      displayNameInput === null || displayNameInput.trim() === ""
-        ? undefined
-        : displayNameInput.trim();
+    const email = normalizeUserEmail(emailInput);
+    if (!email.includes("@")) {
+      errorText = "Untuk local/dev, masukkan email lengkap (contoh: alex@example.tld).";
+      return;
+    }
+    const displayName = newUserDisplayName.trim() || undefined;
 
     feedbackText = "";
     errorText = "";
+    creatingUser = true;
     try {
       const created = await api<{ ok: boolean; user: UserRecord }>("/api/users", {
         method: "POST",
@@ -155,8 +177,11 @@
       selectedUserId = created.user.id;
       localStorage.setItem(SELECTED_USER_STORAGE_KEY, selectedUserId);
       feedbackText = `User ${created.user.displayName ?? created.user.email} berhasil ditambahkan.`;
+      showAddUserModal = false;
     } catch (error) {
       errorText = error instanceof Error ? error.message : "Failed to add user";
+    } finally {
+      creatingUser = false;
     }
   }
 
@@ -174,6 +199,14 @@
     } catch {
       return isoText;
     }
+  }
+
+  function normalizeUserEmail(input: string): string {
+    const value = input.trim().toLowerCase();
+    if (!value) return "";
+    if (value.includes("@")) return value;
+    if (!currentHost || isLocalHost(currentHost)) return value;
+    return `${value}@${currentHost}`;
   }
 
   function unixSecondsToLocal(seconds?: number): string {
@@ -406,7 +439,9 @@
     health = await api<HealthResponse>("/healthz");
     runtimeSettings = await api<RuntimeSettings>("/api/settings/runtime");
     settingsDefaultTelegramChatId = runtimeSettings.stored.defaultTelegramChatId;
-    settingsTelegramForwardEnabled = runtimeSettings.stored.telegramForwardEnabled;
+    settingsTelegramForwardState = runtimeSettings.stored.telegramForwardEnabled
+      ? "enabled"
+      : "disabled";
     settingsTelegramForwardMode = runtimeSettings.stored.telegramForwardMode;
     settingsTelegramForwardChatId = runtimeSettings.stored.telegramForwardChatId;
     settingsUpdatedAt = runtimeSettings.stored.updatedAt;
@@ -441,13 +476,15 @@
         method: "PUT",
         body: JSON.stringify({
           defaultTelegramChatId: settingsDefaultTelegramChatId,
-          telegramForwardEnabled: settingsTelegramForwardEnabled,
+          telegramForwardEnabled: settingsTelegramForwardState === "enabled",
           telegramForwardMode: settingsTelegramForwardMode,
           telegramForwardChatId: settingsTelegramForwardChatId
         })
       });
       settingsDefaultTelegramChatId = response.stored.defaultTelegramChatId;
-      settingsTelegramForwardEnabled = response.stored.telegramForwardEnabled;
+      settingsTelegramForwardState = response.stored.telegramForwardEnabled
+        ? "enabled"
+        : "disabled";
       settingsTelegramForwardMode = response.stored.telegramForwardMode;
       settingsTelegramForwardChatId = response.stored.telegramForwardChatId;
       settingsUpdatedAt = response.stored.updatedAt;
@@ -629,6 +666,7 @@
   }
 
   onMount(() => {
+    currentHost = window.location.hostname;
     allowMockMode = detectAllowMockMode();
     if (allowMockMode) {
       mockMode = isMockModePreferredByDefault();
@@ -668,7 +706,7 @@
           <span class="material-symbols-outlined brand-cloud-icon" aria-hidden="true">cloud</span>
           <strong>MailFlare User List</strong>
           <span class="userlist-separator" aria-hidden="true">|</span>
-          <button class="user-add-btn" on:click={() => void addUser()} title="Add User">
+          <button class="user-add-btn" on:click={openAddUserModal} title="Add User">
             <span>Add user</span>
             <span aria-hidden="true">+</span>
           </button>
@@ -1011,7 +1049,10 @@
             </label>
             <label class="settings-field">
               <span>Forward Inbound Email</span>
-              <input type="checkbox" bind:checked={settingsTelegramForwardEnabled} />
+              <select bind:value={settingsTelegramForwardState}>
+                <option value="enabled">Enabled</option>
+                <option value="disabled">Disabled</option>
+              </select>
             </label>
             <label class="settings-field">
               <span>Forward Target Mode</span>
@@ -1142,6 +1183,54 @@
     </section>
   {/if}
 </main>
+
+{#if showAddUserModal}
+  <div class="modal-backdrop" role="presentation" on:click={handleAddUserBackdropClick}>
+    <div
+      class="modal-card"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="add-user-title"
+    >
+      <header class="modal-head">
+        <h3 id="add-user-title">Add User</h3>
+        <button class="modal-close" type="button" on:click={closeAddUserModal} aria-label="Close">✕</button>
+      </header>
+      <form class="modal-form" on:submit|preventDefault={() => void submitAddUser()}>
+        <label class="settings-field">
+          <span>Username atau Email</span>
+          <input
+            type="text"
+            bind:value={newUserEmail}
+            placeholder={`contoh: alex${currentHost && !isLocalHost(currentHost) ? ` (otomatis jadi alex@${currentHost})` : " atau email lengkap"}`}
+            required
+            autocomplete="off"
+          />
+          {#if newUserEmail.trim()}
+            <small class="muted">Akan disimpan sebagai: {normalizeUserEmail(newUserEmail)}</small>
+          {/if}
+        </label>
+        <label class="settings-field">
+          <span>Display Name (Opsional)</span>
+          <input
+            type="text"
+            bind:value={newUserDisplayName}
+            placeholder="contoh: Alex"
+            autocomplete="off"
+          />
+        </label>
+        <div class="modal-actions">
+          <button class="settings-button muted" type="button" on:click={closeAddUserModal} disabled={creatingUser}>
+            Cancel
+          </button>
+          <button class="settings-button primary" type="submit" disabled={creatingUser}>
+            {creatingUser ? "Adding..." : "Add User"}
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+{/if}
 
 <nav class="bottom-nav" aria-label="Primary">
   {#each navItems as item}

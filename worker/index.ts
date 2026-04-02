@@ -82,12 +82,24 @@ function getPathSegments(pathname: string): string[] {
   return pathname.split("/").filter(Boolean);
 }
 
+function accessCodeFromPath(pathname: string): string | null {
+  const segments = getPathSegments(pathname);
+  if (segments.length !== 2) return null;
+  if (segments[0] !== "auth") return null;
+  const candidate = decodeURIComponent(segments[1] ?? "").trim().toUpperCase();
+  if (!/^MF-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(candidate)) {
+    return null;
+  }
+  return candidate;
+}
+
 function isPublicPath(pathname: string): boolean {
   return (
     pathname === "/api/telegram/webhook" ||
     pathname === "/auth/access-denied" ||
     pathname === "/auth/redeem" ||
-    pathname === "/auth/logout"
+    pathname === "/auth/logout" ||
+    accessCodeFromPath(pathname) !== null
   );
 }
 
@@ -336,6 +348,19 @@ function renderAccessDeniedPage(errorText?: string): string {
       </form>
       <p class="foot">Code hanya bisa dipakai 1x dan kadaluarsa 24 jam.</p>
     </main>
+    <script>
+      (() => {
+        const input = document.getElementById("code");
+        const form = input?.form;
+        if (!input || !form) return;
+        const raw = decodeURIComponent((location.hash || "").replace(/^#/, "")).trim().toUpperCase();
+        const ok = /^MF-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(raw);
+        if (!ok) return;
+        input.value = raw;
+        history.replaceState(null, "", "/auth/access-denied");
+        form.submit();
+      })();
+    </script>
   </body>
 </html>`;
 }
@@ -413,6 +438,10 @@ async function handleAccessRedeem(request: Request, env: Env): Promise<Response>
 
   const form = await request.formData().catch(() => null);
   const rawCode = String(form?.get("code") ?? "").trim().toUpperCase();
+  return redeemAccessCode(rawCode, request, env);
+}
+
+async function redeemAccessCode(rawCode: string, request: Request, env: Env): Promise<Response> {
   if (!rawCode) {
     return htmlResponse(renderAccessDeniedPage("Kode akses wajib diisi."), 400);
   }
@@ -826,15 +855,24 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
         expiresAt: expiresAtIso(ACCESS_CODE_TTL_HOURS)
       });
       await incrementMetric(env.mailflare_db, "private_access_code_created");
-      await send(
-        [
-          "MailFlare Private Access Code",
-          `Code: ${accessCode}`,
+      const quickOpenUrl = `${webhookOrigin}/auth/${accessCode}`;
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, {
+        chat_id: chatId,
+        parse_mode: "Markdown",
+        disable_web_page_preview: true,
+        text: [
+          "*MailFlare Private Access Code*",
+          "",
+          "Copy code:",
+          `\`${accessCode}\``,
+          "",
           "Valid: 24 hours",
           "One-time use: yes",
-          `Open: ${webhookOrigin}/auth/access-denied`
+          "",
+          "Open manually (no preview):",
+          `\`${quickOpenUrl}\``
         ].join("\n")
-      );
+      });
     } else if (parsed.command === "reply") {
       await send("Command /reply disabled in v1.");
     } else {
@@ -917,6 +955,21 @@ export default {
 
     if (pathname === "/auth/redeem") {
       return handleAccessRedeem(request, env);
+    }
+
+    const pathAccessCode = accessCodeFromPath(pathname);
+    if (pathAccessCode) {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return jsonResponse({ error: "Method not allowed" }, 405);
+      }
+      return withSecurityHeaders(
+        new Response(null, {
+          status: 302,
+          headers: {
+            location: `/auth/access-denied#${encodeURIComponent(pathAccessCode)}`
+          }
+        })
+      );
     }
 
     if (pathname === "/auth/logout") {
