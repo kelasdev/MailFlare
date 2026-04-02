@@ -18,7 +18,6 @@ import {
   patchEmailStatus,
   saveStoredSettings
 } from "./db";
-import { verifyAccessJwt } from "./utils/access";
 import { parseInboundEmail } from "./utils/email";
 import {
   isAllowedTelegramUser,
@@ -86,7 +85,8 @@ function isPublicPath(pathname: string): boolean {
   return (
     pathname === "/api/telegram/webhook" ||
     pathname === "/auth/access-denied" ||
-    pathname === "/auth/redeem"
+    pathname === "/auth/redeem" ||
+    pathname === "/auth/logout"
   );
 }
 
@@ -184,30 +184,68 @@ function renderAccessDeniedPage(errorText?: string): string {
       }
       body {
         margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
+        min-height: 100svh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: clamp(16px, 3vw, 32px);
+        padding-top: max(clamp(16px, 3vw, 32px), env(safe-area-inset-top));
+        padding-bottom: max(clamp(16px, 3vw, 32px), env(safe-area-inset-bottom));
+        box-sizing: border-box;
         font-family: Inter, sans-serif;
         background: radial-gradient(circle at 20% 20%, #11294a 0%, #09172c 42%, #050d19 100%);
         color: #e8f1ff;
+        overflow-x: hidden;
+        overflow-y: auto;
       }
       .card {
-        width: min(92vw, 460px);
-        border-radius: 16px;
+        width: min(100%, 500px);
+        border-radius: 18px;
         background: rgba(15, 32, 56, 0.86);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        padding: 28px 24px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        padding: clamp(20px, 3vw, 30px);
         box-shadow: 0 22px 60px rgba(0, 0, 0, 0.34);
+      }
+      .brand {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      .brand-mark {
+        width: clamp(64px, 16vw, 86px);
+        height: auto;
+        filter: drop-shadow(0 10px 24px rgba(246, 130, 31, 0.34));
+      }
+      .brand-name {
+        margin: 0;
+        font-size: clamp(1.15rem, 1.7vw, 1.35rem);
+        line-height: 1.2;
+        letter-spacing: 0.01em;
+        color: #ffb46b;
+        font-weight: 800;
+      }
+      .brand-sub {
+        margin: 0;
+        font-size: 0.86rem;
+        color: #a9bfe3;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
       }
       .title {
         margin: 0 0 8px;
-        font-size: 1.3rem;
+        font-size: clamp(1.08rem, 1.6vw, 1.25rem);
         font-weight: 700;
+        text-align: center;
       }
       .hint {
         margin: 0 0 18px;
         color: #b8cae8;
-        font-size: 0.95rem;
+        font-size: clamp(0.9rem, 1.2vw, 0.95rem);
+        line-height: 1.45;
+        text-align: center;
       }
       .error {
         color: #ffb4a0;
@@ -222,12 +260,16 @@ function renderAccessDeniedPage(errorText?: string): string {
         width: 100%;
         box-sizing: border-box;
         border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.2);
         background: rgba(3, 14, 28, 0.84);
         color: #f3f7ff;
-        padding: 11px 12px;
-        letter-spacing: 0.04em;
+        padding: 12px 13px;
+        letter-spacing: 0.045em;
         text-transform: uppercase;
+      }
+      input:focus {
+        outline: 2px solid rgba(255, 161, 85, 0.55);
+        outline-offset: 1px;
       }
       button {
         margin-top: 14px;
@@ -235,20 +277,55 @@ function renderAccessDeniedPage(errorText?: string): string {
         border: none;
         border-radius: 10px;
         background: linear-gradient(90deg, #ff8e3a, #ff6a2d);
-        color: #131313;
+        color: #141414;
         font-weight: 700;
-        padding: 12px;
+        padding: 12px 14px;
         cursor: pointer;
+      }
+      button:hover {
+        filter: brightness(1.06);
       }
       .foot {
         margin-top: 14px;
-        font-size: 0.78rem;
+        font-size: 0.8rem;
         color: #9eb4da;
+        text-align: center;
+      }
+      @media (max-width: 420px) {
+        body {
+          align-items: flex-start;
+        }
+        .card {
+          border-radius: 14px;
+          box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+        }
+        .brand {
+          margin-bottom: 14px;
+        }
+        .foot {
+          font-size: 0.76rem;
+        }
       }
     </style>
   </head>
   <body>
     <main class="card">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 220 120" role="img" aria-label="Cloud icon">
+          <defs>
+            <linearGradient id="cfg" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#ffb44a" />
+              <stop offset="100%" stop-color="#f6821f" />
+            </linearGradient>
+          </defs>
+          <ellipse cx="110" cy="78" rx="88" ry="28" fill="url(#cfg)" />
+          <circle cx="72" cy="66" r="27" fill="#ffb44a" />
+          <circle cx="108" cy="54" r="34" fill="#ff9d35" />
+          <circle cx="148" cy="66" r="24" fill="#f6821f" />
+        </svg>
+        <p class="brand-name">MailFlare</p>
+        <p class="brand-sub">Private Gateway</p>
+      </div>
       <h1 class="title">MailFlare Private Zone</h1>
       ${message}
       <form action="/auth/redeem" method="post">
@@ -277,6 +354,22 @@ function buildSessionCookie(token: string, request: Request): string {
   return attributes.join("; ");
 }
 
+function clearSessionCookie(request: Request): string {
+  const url = new URL(request.url);
+  const attributes = [
+    `${ACCESS_SESSION_COOKIE_NAME}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Strict",
+    "Max-Age=0",
+    "Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+  ];
+  if (url.protocol === "https:") {
+    attributes.push("Secure");
+  }
+  return attributes.join("; ");
+}
+
 async function isSessionAuthorized(request: Request, env: Env): Promise<boolean> {
   const cookies = parseCookies(request);
   const token = cookies.get(ACCESS_SESSION_COOKIE_NAME);
@@ -287,17 +380,8 @@ async function isSessionAuthorized(request: Request, env: Env): Promise<boolean>
 
 async function isRequestAuthorized(request: Request, env: Env): Promise<boolean> {
   const url = new URL(request.url);
-  const accessConfigured = Boolean(
-    env.CF_ACCESS_TEAM_DOMAIN?.trim() && env.CF_ACCESS_AUD?.trim()
-  );
-  if (!accessConfigured && isLocalHost(url.hostname)) {
+  if (isLocalHost(url.hostname)) {
     return true;
-  }
-
-  const token = request.headers.get("cf-access-jwt-assertion");
-  if (token) {
-    const result = await verifyAccessJwt(token, env);
-    if (result.ok) return true;
   }
 
   return isSessionAuthorized(request, env);
@@ -441,9 +525,7 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
     const metrics = await listWorkerMetrics(env.mailflare_db);
     const stored = await getStoredSettings(env.mailflare_db);
     const runtime: RuntimeSettings = {
-      accessConfigured: Boolean(
-        env.CF_ACCESS_TEAM_DOMAIN?.trim() && env.CF_ACCESS_AUD?.trim()
-      ),
+      privateGatewayEnabled: true,
       telegramConfigured: Boolean(env.TELEGRAM_BOT_TOKEN?.trim()),
       webhookSecretConfigured: Boolean(env.TELEGRAM_WEBHOOK_SECRET?.trim()),
       telegramAllowedIdsCount: parseAllowedIds(env.TELEGRAM_ALLOWED_IDS).size,
@@ -755,6 +837,18 @@ export default {
 
     if (pathname === "/auth/redeem") {
       return handleAccessRedeem(request, env);
+    }
+
+    if (pathname === "/auth/logout") {
+      return withSecurityHeaders(
+        new Response(null, {
+          status: 302,
+          headers: {
+            location: "/auth/access-denied",
+            "set-cookie": clearSessionCookie(request)
+          }
+        })
+      );
     }
 
     if (!isPublicPath(pathname)) {

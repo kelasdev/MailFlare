@@ -36,7 +36,7 @@ interface HealthResponse {
 }
 
 export interface RuntimeSettings {
-  accessConfigured: boolean;
+  privateGatewayEnabled: boolean;
   telegramConfigured: boolean;
   webhookSecretConfigured: boolean;
   telegramAllowedIdsCount: number;
@@ -303,7 +303,7 @@ export async function mockApi<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (method === "GET" && path === "/api/settings/runtime") {
     const runtime: RuntimeSettings = {
-      accessConfigured: true,
+      privateGatewayEnabled: true,
       telegramConfigured: true,
       webhookSecretConfigured: true,
       telegramAllowedIdsCount: 1,

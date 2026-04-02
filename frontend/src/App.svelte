@@ -36,7 +36,8 @@
   let loading = false;
   let errorText = "";
   let feedbackText = "";
-  let mockMode = isMockModePreferredByDefault();
+  let mockMode = false;
+  let allowMockMode = false;
 
   let stats: DashboardStats | null = null;
   let users: UserRecord[] = [];
@@ -230,6 +231,12 @@
   }
 
   function initializeMockMode(): void {
+    if (!allowMockMode) {
+      mockMode = false;
+      localStorage.setItem(MOCK_MODE_STORAGE_KEY, "0");
+      return;
+    }
+
     const queryMode = new URLSearchParams(window.location.search).get("mock");
     if (queryMode === "1") {
       mockMode = true;
@@ -250,6 +257,11 @@
     }
   }
 
+  function detectAllowMockMode(): boolean {
+    const host = window.location.hostname;
+    return import.meta.env.DEV || host === "localhost" || host === "127.0.0.1" || host === "::1";
+  }
+
   function initializeInternalPath(): void {
     const storedPath = localStorage.getItem(INTERNAL_PATH_STORAGE_KEY);
     currentPath = asNavPath(storedPath);
@@ -262,6 +274,7 @@
   }
 
   function setMockMode(value: boolean): void {
+    if (!allowMockMode) return;
     mockMode = value;
     localStorage.setItem(MOCK_MODE_STORAGE_KEY, value ? "1" : "0");
     feedbackText = value
@@ -560,6 +573,10 @@
   }
 
   onMount(() => {
+    allowMockMode = detectAllowMockMode();
+    if (allowMockMode) {
+      mockMode = isMockModePreferredByDefault();
+    }
     initializeInternalPath();
     initializeMockMode();
     void loadCurrentView();
@@ -636,12 +653,14 @@
         </button>
       {/each}
     </nav>
-    <div class="mock-control">
-      <span class="muted">Data: {mockMode ? "Mock" : "Live"}</span>
-      <button on:click={() => setMockMode(!mockMode)}>
-        Switch to {mockMode ? "Live" : "Mock"}
-      </button>
-    </div>
+    {#if allowMockMode}
+      <div class="mock-control">
+        <span class="muted">Data: {mockMode ? "Mock" : "Live"}</span>
+        <button on:click={() => setMockMode(!mockMode)}>
+          Switch to {mockMode ? "Live" : "Mock"}
+        </button>
+      </div>
+    {/if}
   </section>
 
   {#if loading}
@@ -874,9 +893,9 @@
         <span class="settings-chip" class:mock={mockMode}>
           {mockMode
             ? "Mock Status"
-            : runtimeSettings?.accessConfigured
-              ? "Access Protected"
-              : "Access Not Configured"}
+            : runtimeSettings?.privateGatewayEnabled
+              ? "Private Gateway Enabled"
+              : "Private Gateway Disabled"}
         </span>
       </div>
 
@@ -977,10 +996,10 @@
               <input type="checkbox" bind:checked={settingsWebhookForwardEnabled} />
             </label>
             <label class="settings-field">
-              <span>Cloudflare Access</span>
+              <span>Private Gateway</span>
               <input
                 type="text"
-                value={runtimeSettings?.accessConfigured ? "Configured" : "Not configured"}
+                value={runtimeSettings?.privateGatewayEnabled ? "Enabled" : "Disabled"}
                 readonly
               />
             </label>

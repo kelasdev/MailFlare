@@ -12,8 +12,6 @@ export interface Env {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_ALLOWED_IDS?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
-  CF_ACCESS_TEAM_DOMAIN?: string;
-  CF_ACCESS_AUD?: string;
 }
 
 export interface EmailRecord {
@@ -49,7 +47,7 @@ export interface DashboardStats {
 }
 
 export interface RuntimeSettings {
-  accessConfigured: boolean;
+  privateGatewayEnabled: boolean;
   telegramConfigured: boolean;
   webhookSecretConfigured: boolean;
   telegramAllowedIdsCount: number;

@@ -9,7 +9,10 @@ const app = mount(App, {
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", async () => {
     try {
-      await navigator.serviceWorker.register("/sw.js");
+      const registration = await navigator.serviceWorker.register("/sw.js", {
+        updateViaCache: "none"
+      });
+      void registration.update();
     } catch (error) {
       console.error("Service worker registration failed", error);
     }
