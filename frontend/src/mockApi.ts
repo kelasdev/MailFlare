@@ -40,14 +40,16 @@ export interface RuntimeSettings {
   telegramConfigured: boolean;
   webhookSecretConfigured: boolean;
   telegramAllowedIdsCount: number;
+  telegramAllowedIds: string[];
   metrics: Record<string, number>;
   stored: StoredSettings;
 }
 
 export interface StoredSettings {
   defaultTelegramChatId: string;
-  webhookForwardEnabled: boolean;
-  webhookForwardUrl: string;
+  telegramForwardEnabled: boolean;
+  telegramForwardMode: "all_allowed" | "specific";
+  telegramForwardChatId: string;
   updatedAt: string | null;
 }
 
@@ -175,8 +177,9 @@ const emailsStore: EmailRecord[] = [
 
 const storedSettings: StoredSettings = {
   defaultTelegramChatId: "-100148293041",
-  webhookForwardEnabled: true,
-  webhookForwardUrl: "https://example.com/webhook/mailflare",
+  telegramForwardEnabled: true,
+  telegramForwardMode: "all_allowed",
+  telegramForwardChatId: "",
   updatedAt: new Date().toISOString()
 };
 
@@ -307,6 +310,7 @@ export async function mockApi<T>(path: string, init?: RequestInit): Promise<T> {
       telegramConfigured: true,
       webhookSecretConfigured: true,
       telegramAllowedIdsCount: 1,
+      telegramAllowedIds: ["123456789"],
       metrics: {
         inbound_email_count: emailsStore.length,
         telegram_webhook_ok: 12,
@@ -320,13 +324,16 @@ export async function mockApi<T>(path: string, init?: RequestInit): Promise<T> {
   if (method === "PUT" && path === "/api/settings/profile") {
     const payload = (init?.body ? JSON.parse(String(init.body)) : {}) as {
       defaultTelegramChatId?: string;
-      webhookForwardEnabled?: boolean;
-      webhookForwardUrl?: string;
+      telegramForwardEnabled?: boolean;
+      telegramForwardMode?: "all_allowed" | "specific";
+      telegramForwardChatId?: string;
     };
 
     storedSettings.defaultTelegramChatId = payload.defaultTelegramChatId?.trim() ?? "";
-    storedSettings.webhookForwardEnabled = Boolean(payload.webhookForwardEnabled);
-    storedSettings.webhookForwardUrl = payload.webhookForwardUrl?.trim() ?? "";
+    storedSettings.telegramForwardEnabled = Boolean(payload.telegramForwardEnabled);
+    storedSettings.telegramForwardMode =
+      payload.telegramForwardMode === "specific" ? "specific" : "all_allowed";
+    storedSettings.telegramForwardChatId = payload.telegramForwardChatId?.trim() ?? "";
     storedSettings.updatedAt = new Date().toISOString();
 
     return json({
@@ -337,6 +344,18 @@ export async function mockApi<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (method === "POST" && path === "/api/settings/telegram/test") {
     return json({ ok: true }) as T;
+  }
+
+  if (method === "GET" && path === "/api/settings/telegram/webhook-status") {
+    return json({
+      ok: true,
+      status: {
+        url: "https://mail-flare.example.workers.dev/api/telegram/webhook",
+        has_custom_certificate: false,
+        pending_update_count: 0,
+        max_connections: 40
+      }
+    }) as T;
   }
 
   const userInboxMatch = path.match(/^\/api\/users\/([^/]+)\/inbox$/);

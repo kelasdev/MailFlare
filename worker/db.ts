@@ -357,10 +357,13 @@ export async function listWorkerMetrics(db: D1Database): Promise<Record<string, 
 export async function getStoredSettings(db: D1Database): Promise<StoredSettings> {
   const result = await db
     .prepare(
-      "SELECT key, value, updated_at FROM worker_settings WHERE key IN (?, ?, ?) ORDER BY updated_at DESC"
+      "SELECT key, value, updated_at FROM worker_settings WHERE key IN (?, ?, ?, ?, ?, ?) ORDER BY updated_at DESC"
     )
     .bind(
       "default_telegram_chat_id",
+      "telegram_forward_enabled",
+      "telegram_forward_mode",
+      "telegram_forward_chat_id",
       "webhook_forward_enabled",
       "webhook_forward_url"
     )
@@ -379,8 +382,12 @@ export async function getStoredSettings(db: D1Database): Promise<StoredSettings>
 
   return {
     defaultTelegramChatId: map.get("default_telegram_chat_id") ?? "",
-    webhookForwardEnabled: (map.get("webhook_forward_enabled") ?? "0") === "1",
-    webhookForwardUrl: map.get("webhook_forward_url") ?? "",
+    telegramForwardEnabled:
+      (map.get("telegram_forward_enabled") ?? map.get("webhook_forward_enabled") ?? "1") ===
+      "1",
+    telegramForwardMode:
+      map.get("telegram_forward_mode") === "specific" ? "specific" : "all_allowed",
+    telegramForwardChatId: map.get("telegram_forward_chat_id") ?? "",
     updatedAt
   };
 }
@@ -389,8 +396,9 @@ export async function saveStoredSettings(
   db: D1Database,
   input: {
     defaultTelegramChatId: string;
-    webhookForwardEnabled: boolean;
-    webhookForwardUrl: string;
+    telegramForwardEnabled: boolean;
+    telegramForwardMode: "all_allowed" | "specific";
+    telegramForwardChatId: string;
   }
 ): Promise<void> {
   const entries: Array<{ key: string; value: string }> = [
@@ -399,12 +407,16 @@ export async function saveStoredSettings(
       value: input.defaultTelegramChatId.trim()
     },
     {
-      key: "webhook_forward_enabled",
-      value: input.webhookForwardEnabled ? "1" : "0"
+      key: "telegram_forward_enabled",
+      value: input.telegramForwardEnabled ? "1" : "0"
     },
     {
-      key: "webhook_forward_url",
-      value: input.webhookForwardUrl.trim()
+      key: "telegram_forward_mode",
+      value: input.telegramForwardMode
+    },
+    {
+      key: "telegram_forward_chat_id",
+      value: input.telegramForwardChatId.trim()
     }
   ];
 

@@ -51,14 +51,18 @@ export interface RuntimeSettings {
   telegramConfigured: boolean;
   webhookSecretConfigured: boolean;
   telegramAllowedIdsCount: number;
+  telegramAllowedIds: string[];
   metrics: Record<string, number>;
   stored: StoredSettings;
 }
 
+export type TelegramForwardMode = "all_allowed" | "specific";
+
 export interface StoredSettings {
   defaultTelegramChatId: string;
-  webhookForwardEnabled: boolean;
-  webhookForwardUrl: string;
+  telegramForwardEnabled: boolean;
+  telegramForwardMode: TelegramForwardMode;
+  telegramForwardChatId: string;
   updatedAt: string | null;
 }
 
@@ -69,6 +73,7 @@ export interface EmailStatusPatch {
 
 export interface TelegramCommand {
   command:
+    | "start"
     | "stats"
     | "inbox"
     | "mail"

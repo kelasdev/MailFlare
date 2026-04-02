@@ -16,6 +16,16 @@
     timestamp: string;
   }
 
+  interface TelegramWebhookStatus {
+    url: string;
+    has_custom_certificate: boolean;
+    pending_update_count: number;
+    ip_address?: string;
+    last_error_date?: number;
+    last_error_message?: string;
+    max_connections?: number;
+  }
+
   const MOCK_MODE_STORAGE_KEY = "mailflare:mock-mode";
   const INTERNAL_PATH_STORAGE_KEY = "mailflare:internal-path";
   const SELECTED_USER_STORAGE_KEY = "mailflare:selected-user";
@@ -55,8 +65,11 @@
   let telegramChatId = "";
   let testingTelegramConnection = false;
   let settingsDefaultTelegramChatId = "";
-  let settingsWebhookForwardEnabled = false;
-  let settingsWebhookForwardUrl = "";
+  let settingsTelegramForwardEnabled = true;
+  let settingsTelegramForwardMode: "all_allowed" | "specific" = "all_allowed";
+  let settingsTelegramForwardChatId = "";
+  let telegramWebhookStatus: TelegramWebhookStatus | null = null;
+  let loadingWebhookStatus = false;
   let settingsUpdatedAt: string | null = null;
   let savingSettingsProfile = false;
 
@@ -160,6 +173,15 @@
       return new Date(isoText).toLocaleString();
     } catch {
       return isoText;
+    }
+  }
+
+  function unixSecondsToLocal(seconds?: number): string {
+    if (!seconds) return "-";
+    try {
+      return new Date(seconds * 1000).toLocaleString();
+    } catch {
+      return String(seconds);
     }
   }
 
@@ -380,15 +402,21 @@
     health = await api<HealthResponse>("/healthz");
     runtimeSettings = await api<RuntimeSettings>("/api/settings/runtime");
     settingsDefaultTelegramChatId = runtimeSettings.stored.defaultTelegramChatId;
-    settingsWebhookForwardEnabled = runtimeSettings.stored.webhookForwardEnabled;
-    settingsWebhookForwardUrl = runtimeSettings.stored.webhookForwardUrl;
+    settingsTelegramForwardEnabled = runtimeSettings.stored.telegramForwardEnabled;
+    settingsTelegramForwardMode = runtimeSettings.stored.telegramForwardMode;
+    settingsTelegramForwardChatId = runtimeSettings.stored.telegramForwardChatId;
     settingsUpdatedAt = runtimeSettings.stored.updatedAt;
     if (!telegramChatId.trim()) {
-      telegramChatId = runtimeSettings.stored.defaultTelegramChatId;
+      telegramChatId =
+        runtimeSettings.stored.telegramForwardMode === "specific"
+          ? runtimeSettings.stored.telegramForwardChatId ||
+            runtimeSettings.stored.defaultTelegramChatId
+          : runtimeSettings.stored.defaultTelegramChatId;
     }
     if (!stats) {
       stats = await api<DashboardStats>("/api/dashboard/stats");
     }
+    await refreshTelegramWebhookStatus();
   }
 
   async function saveSettingsProfile(): Promise<void> {
@@ -400,24 +428,30 @@
         ok: boolean;
         stored: {
           defaultTelegramChatId: string;
-          webhookForwardEnabled: boolean;
-          webhookForwardUrl: string;
+          telegramForwardEnabled: boolean;
+          telegramForwardMode: "all_allowed" | "specific";
+          telegramForwardChatId: string;
           updatedAt: string | null;
         };
       }>("/api/settings/profile", {
         method: "PUT",
         body: JSON.stringify({
           defaultTelegramChatId: settingsDefaultTelegramChatId,
-          webhookForwardEnabled: settingsWebhookForwardEnabled,
-          webhookForwardUrl: settingsWebhookForwardUrl
+          telegramForwardEnabled: settingsTelegramForwardEnabled,
+          telegramForwardMode: settingsTelegramForwardMode,
+          telegramForwardChatId: settingsTelegramForwardChatId
         })
       });
       settingsDefaultTelegramChatId = response.stored.defaultTelegramChatId;
-      settingsWebhookForwardEnabled = response.stored.webhookForwardEnabled;
-      settingsWebhookForwardUrl = response.stored.webhookForwardUrl;
+      settingsTelegramForwardEnabled = response.stored.telegramForwardEnabled;
+      settingsTelegramForwardMode = response.stored.telegramForwardMode;
+      settingsTelegramForwardChatId = response.stored.telegramForwardChatId;
       settingsUpdatedAt = response.stored.updatedAt;
       if (!telegramChatId.trim()) {
-        telegramChatId = response.stored.defaultTelegramChatId;
+        telegramChatId =
+          response.stored.telegramForwardMode === "specific"
+            ? response.stored.telegramForwardChatId || response.stored.defaultTelegramChatId
+            : response.stored.defaultTelegramChatId;
       }
       feedbackText = "Settings profile berhasil disimpan.";
       await loadSettings();
@@ -429,7 +463,11 @@
   }
 
   async function testTelegramConnection(): Promise<void> {
-    const chatId = telegramChatId.trim() || settingsDefaultTelegramChatId.trim();
+    const chatId =
+      telegramChatId.trim() ||
+      (settingsTelegramForwardMode === "specific"
+        ? settingsTelegramForwardChatId.trim() || settingsDefaultTelegramChatId.trim()
+        : settingsDefaultTelegramChatId.trim());
     if (!chatId) {
       errorText = "Chat ID wajib diisi untuk test Telegram.";
       return;
@@ -451,6 +489,20 @@
       errorText = error instanceof Error ? error.message : "Failed to send Telegram test";
     } finally {
       testingTelegramConnection = false;
+    }
+  }
+
+  async function refreshTelegramWebhookStatus(): Promise<void> {
+    loadingWebhookStatus = true;
+    try {
+      const response = await api<{ ok: boolean; status: TelegramWebhookStatus }>(
+        "/api/settings/telegram/webhook-status"
+      );
+      telegramWebhookStatus = response.status;
+    } catch {
+      telegramWebhookStatus = null;
+    } finally {
+      loadingWebhookStatus = false;
     }
   }
 
@@ -933,7 +985,7 @@
             <div class="settings-panel-icon">TG</div>
             <div>
               <h3>Telegram Bot Config</h3>
-              <p>Instant notifications for worker events.</p>
+              <p>Forward inbound email + test delivery target.</p>
             </div>
           </div>
           <div class="settings-field-stack">
@@ -946,12 +998,49 @@
               />
             </label>
             <label class="settings-field">
-              <span>Chat ID</span>
-              <input type="text" bind:value={telegramChatId} placeholder="Override untuk test sekali kirim" />
+              <span>Allowed IDs (ENV)</span>
+              <input
+                type="text"
+                value={runtimeSettings?.telegramAllowedIds?.join(", ") || "-"}
+                readonly
+              />
             </label>
             <label class="settings-field">
-              <span>Default Chat ID (Saved)</span>
-              <input type="text" bind:value={settingsDefaultTelegramChatId} placeholder="Dipakai jika Chat ID test kosong" />
+              <span>Forward Inbound Email</span>
+              <input type="checkbox" bind:checked={settingsTelegramForwardEnabled} />
+            </label>
+            <label class="settings-field">
+              <span>Forward Target Mode</span>
+              <select bind:value={settingsTelegramForwardMode}>
+                <option value="all_allowed">All Allowed IDs</option>
+                <option value="specific">Specific Chat ID</option>
+              </select>
+            </label>
+            {#if settingsTelegramForwardMode === "specific"}
+              <label class="settings-field">
+                <span>Forward Chat ID (Specific)</span>
+                <input
+                  type="text"
+                  bind:value={settingsTelegramForwardChatId}
+                  placeholder="Contoh: 123456789"
+                />
+              </label>
+            {/if}
+            <label class="settings-field">
+              <span>Default Chat ID (Fallback)</span>
+              <input
+                type="text"
+                bind:value={settingsDefaultTelegramChatId}
+                placeholder="Dipakai saat specific mode tanpa override"
+              />
+            </label>
+            <label class="settings-field">
+              <span>Test Chat ID (Override sekali kirim)</span>
+              <input
+                type="text"
+                bind:value={telegramChatId}
+                placeholder="Kosongkan untuk pakai target tersimpan"
+              />
             </label>
             <div class="settings-row-actions">
               <button
@@ -960,7 +1049,7 @@
                 disabled={savingSettingsProfile}
                 on:click={() => void saveSettingsProfile()}
               >
-                {savingSettingsProfile ? "Saving..." : "Save Profile"}
+                {savingSettingsProfile ? "Saving..." : "Save Telegram Config"}
               </button>
               <button
                 class="settings-button primary"
@@ -978,22 +1067,38 @@
           <div class="settings-panel-head">
             <div class="settings-panel-icon">CF</div>
             <div>
-              <h3>Worker Profile Settings</h3>
-              <p>Disimpan di D1 untuk baseline operasional.</p>
+              <h3>Telegram Webhook Status</h3>
+              <p>Lihat status webhook langsung dari Telegram API.</p>
             </div>
           </div>
           <div class="settings-field-stack">
             <label class="settings-field">
-              <span>Webhook Forward URL</span>
+              <span>Webhook Secret</span>
               <input
-                type="url"
-                bind:value={settingsWebhookForwardUrl}
-                placeholder="https://your-service.example/webhook"
+                type="text"
+                value={runtimeSettings?.webhookSecretConfigured ? "Configured" : "Not configured"}
+                readonly
               />
             </label>
             <label class="settings-field">
-              <span>Webhook Forward Enabled</span>
-              <input type="checkbox" bind:checked={settingsWebhookForwardEnabled} />
+              <span>Webhook URL</span>
+              <input type="text" value={telegramWebhookStatus?.url ?? "-"} readonly />
+            </label>
+            <label class="settings-field">
+              <span>Pending Updates</span>
+              <input type="text" value={String(telegramWebhookStatus?.pending_update_count ?? "-")} readonly />
+            </label>
+            <label class="settings-field">
+              <span>Last Error</span>
+              <input
+                type="text"
+                value={telegramWebhookStatus?.last_error_message ?? "-"}
+                readonly
+              />
+            </label>
+            <label class="settings-field">
+              <span>Last Error Date</span>
+              <input type="text" value={unixSecondsToLocal(telegramWebhookStatus?.last_error_date)} readonly />
             </label>
             <label class="settings-field">
               <span>Private Gateway</span>
@@ -1003,22 +1108,14 @@
                 readonly
               />
             </label>
-            <label class="settings-field">
-              <span>Telegram Webhook Secret</span>
-              <input
-                type="text"
-                value={runtimeSettings?.webhookSecretConfigured ? "Configured" : "Not configured"}
-                readonly
-              />
-            </label>
             <div class="settings-row-actions">
               <button
                 class="settings-button muted"
                 type="button"
-                disabled={savingSettingsProfile}
-                on:click={() => void saveSettingsProfile()}
+                disabled={loadingWebhookStatus}
+                on:click={() => void refreshTelegramWebhookStatus()}
               >
-                {savingSettingsProfile ? "Saving..." : "Save Profile"}
+                {loadingWebhookStatus ? "Checking..." : "Check Webhook Status"}
               </button>
               <button class="settings-button muted" type="button" on:click={() => void loadSettings()}>
                 Refresh Runtime
@@ -1031,7 +1128,7 @@
       <aside class="settings-note">
         <strong>Worker Health:</strong> {health?.status ?? "unknown"} - {health ? toLocalTime(health.timestamp) : "-"}
         <br />
-        Changes are applied instantly across workers. Ensure your webhook endpoint can handle burst traffic.
+        Changes are applied instantly across workers. Use specific mode to target one chat ID, or all-allowed mode for broadcast alerts.
         <br />
         <strong>Profile Updated:</strong> {settingsUpdatedAt ? toLocalTime(settingsUpdatedAt) : "-"}
       </aside>

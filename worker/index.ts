@@ -20,6 +20,7 @@ import {
 } from "./db";
 import { parseInboundEmail } from "./utils/email";
 import {
+  getTelegramWebhookInfo,
   isAllowedTelegramUser,
   parseAllowedIds,
   parseTelegramCommand,
@@ -387,6 +388,24 @@ async function isRequestAuthorized(request: Request, env: Env): Promise<boolean>
   return isSessionAuthorized(request, env);
 }
 
+function resolveTelegramForwardTargets(
+  allowedIds: Set<string>,
+  stored: RuntimeSettings["stored"]
+): string[] {
+  if (!stored.telegramForwardEnabled) {
+    return [];
+  }
+  if (stored.telegramForwardMode === "specific") {
+    const target = stored.telegramForwardChatId.trim() || stored.defaultTelegramChatId.trim();
+    if (!target) return [];
+    if (!allowedIds.has(target)) {
+      return [];
+    }
+    return [target];
+  }
+  return Array.from(allowedIds);
+}
+
 async function handleAccessRedeem(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") {
     return htmlResponse(renderAccessDeniedPage(), 200);
@@ -524,11 +543,13 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET" && pathname === "/api/settings/runtime") {
     const metrics = await listWorkerMetrics(env.mailflare_db);
     const stored = await getStoredSettings(env.mailflare_db);
+    const allowedIds = parseAllowedIds(env.TELEGRAM_ALLOWED_IDS);
     const runtime: RuntimeSettings = {
       privateGatewayEnabled: true,
       telegramConfigured: Boolean(env.TELEGRAM_BOT_TOKEN?.trim()),
       webhookSecretConfigured: Boolean(env.TELEGRAM_WEBHOOK_SECRET?.trim()),
-      telegramAllowedIdsCount: parseAllowedIds(env.TELEGRAM_ALLOWED_IDS).size,
+      telegramAllowedIdsCount: allowedIds.size,
+      telegramAllowedIds: Array.from(allowedIds),
       metrics,
       stored
     };
@@ -539,30 +560,40 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
     const body = (await request.json().catch(() => null)) as
       | {
           defaultTelegramChatId?: string;
-          webhookForwardEnabled?: boolean;
-          webhookForwardUrl?: string;
+          telegramForwardEnabled?: boolean;
+          telegramForwardMode?: "all_allowed" | "specific";
+          telegramForwardChatId?: string;
         }
       | null;
 
     const defaultTelegramChatId = body?.defaultTelegramChatId?.trim() ?? "";
-    const webhookForwardEnabled = Boolean(body?.webhookForwardEnabled);
-    const webhookForwardUrl = body?.webhookForwardUrl?.trim() ?? "";
+    const telegramForwardEnabled = Boolean(body?.telegramForwardEnabled);
+    const telegramForwardMode =
+      body?.telegramForwardMode === "specific" ? "specific" : "all_allowed";
+    const telegramForwardChatId = body?.telegramForwardChatId?.trim() ?? "";
+    const allowedIds = parseAllowedIds(env.TELEGRAM_ALLOWED_IDS);
 
-    if (webhookForwardUrl) {
-      try {
-        const parsed = new URL(webhookForwardUrl);
-        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-          return jsonResponse({ error: "Webhook URL must use http or https" }, 400);
-        }
-      } catch {
-        return jsonResponse({ error: "Invalid webhook URL" }, 400);
+    if (telegramForwardMode === "specific") {
+      const target = telegramForwardChatId || defaultTelegramChatId;
+      if (!target) {
+        return jsonResponse(
+          { error: "Specific mode requires telegramForwardChatId or defaultTelegramChatId" },
+          400
+        );
+      }
+      if (allowedIds.size > 0 && !allowedIds.has(target)) {
+        return jsonResponse(
+          { error: "Specific forward chat id must be inside TELEGRAM_ALLOWED_IDS" },
+          400
+        );
       }
     }
 
     await saveStoredSettings(env.mailflare_db, {
       defaultTelegramChatId,
-      webhookForwardEnabled,
-      webhookForwardUrl
+      telegramForwardEnabled,
+      telegramForwardMode,
+      telegramForwardChatId
     });
     await incrementMetric(env.mailflare_db, "settings_profile_saved");
     const stored = await getStoredSettings(env.mailflare_db);
@@ -575,14 +606,20 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
       | null;
 
     const runtimeStored = await getStoredSettings(env.mailflare_db);
+    const allowedIds = parseAllowedIds(env.TELEGRAM_ALLOWED_IDS);
     const chatIdRaw =
       body?.chatId !== undefined && body?.chatId !== null
         ? String(body.chatId)
-        : runtimeStored.defaultTelegramChatId;
+        : runtimeStored.telegramForwardMode === "specific"
+          ? runtimeStored.telegramForwardChatId || runtimeStored.defaultTelegramChatId
+          : runtimeStored.defaultTelegramChatId;
     const chatId = chatIdRaw.trim();
     if (!chatId) return jsonResponse({ error: "chatId is required" }, 400);
     if (!env.TELEGRAM_BOT_TOKEN?.trim()) {
       return jsonResponse({ error: "TELEGRAM_BOT_TOKEN is not configured" }, 400);
+    }
+    if (allowedIds.size > 0 && !allowedIds.has(chatId)) {
+      return jsonResponse({ error: "chatId must be inside TELEGRAM_ALLOWED_IDS" }, 400);
     }
 
     const text = body?.message?.trim() || `MailFlare test ping (${new Date().toISOString()})`;
@@ -599,6 +636,14 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
     });
     await incrementMetric(env.mailflare_db, "telegram_test_sent");
     return jsonResponse({ ok: true });
+  }
+
+  if (request.method === "GET" && pathname === "/api/settings/telegram/webhook-status") {
+    if (!env.TELEGRAM_BOT_TOKEN?.trim()) {
+      return jsonResponse({ error: "TELEGRAM_BOT_TOKEN is not configured" }, 400);
+    }
+    const status = await getTelegramWebhookInfo(env.TELEGRAM_BOT_TOKEN);
+    return jsonResponse({ ok: true, status });
   }
 
   return jsonResponse({ error: "Not found" }, 404);
@@ -666,7 +711,27 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
     });
 
   try {
-    if (parsed.command === "stats") {
+    if (parsed.command === "start") {
+      await send(
+        [
+          "Welcome to MailFlare Bot.",
+          "Use /access to get one-time gateway code (24h, one-use).",
+          "",
+          "Supported:",
+          "/start",
+          "/stats",
+          "/inbox [user_id]",
+          "/mail <email_id>",
+          "/read <email_id>",
+          "/unread <email_id>",
+          "/star <email_id>",
+          "/unstar <email_id>",
+          "/archive <email_id>",
+          "/delete <email_id>",
+          "/access"
+        ].join("\n")
+      );
+    } else if (parsed.command === "stats") {
       const stats = await getDashboardStats(env.mailflare_db);
       await send(
         [
@@ -763,6 +828,7 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
         [
           "Unknown command.",
           "Supported:",
+          "/start",
           "/stats",
           "/inbox [user_id]",
           "/mail <email_id>",
@@ -895,7 +961,13 @@ export default {
     });
     await incrementMetric(env.mailflare_db, "inbound_email_count");
 
-    const allowedIds = Array.from(parseAllowedIds(env.TELEGRAM_ALLOWED_IDS));
+    const allowedIds = parseAllowedIds(env.TELEGRAM_ALLOWED_IDS);
+    const stored = await getStoredSettings(env.mailflare_db);
+    const targetChatIds = resolveTelegramForwardTargets(allowedIds, stored);
+    if (targetChatIds.length < 1) {
+      await incrementMetric(env.mailflare_db, "telegram_forward_skipped_no_target");
+      return;
+    }
     const subject = parsed.subject?.trim() || "(No Subject)";
     const alertText = [
       "New inbound email",
@@ -906,7 +978,7 @@ export default {
     ].join("\n");
 
     await Promise.allSettled(
-      allowedIds.map((chatId) =>
+      targetChatIds.map((chatId) =>
         sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, {
           chat_id: chatId,
           text: alertText
