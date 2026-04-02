@@ -19,10 +19,16 @@ export interface UserRecord {
 export interface EmailRecord {
   id: string;
   userId: string;
+  messageId?: string | null;
   sender: string;
   recipient: string;
   subject: string | null;
   snippet: string | null;
+  bodyText?: string | null;
+  bodyHtml?: string | null;
+  rawMime?: string | null;
+  headersJson?: string | null;
+  rawSize?: number | null;
   isRead: boolean;
   isStarred: boolean;
   isArchived: boolean;
@@ -90,6 +96,7 @@ const emailsStore: EmailRecord[] = [
     recipient: "alex@company.com",
     subject: "Invoice April 2026 is ready",
     snippet: "Your monthly invoice is ready to view and download.",
+    bodyText: "Your monthly invoice is ready to view and download.",
     isRead: false,
     isStarred: true,
     isArchived: false,
@@ -103,6 +110,7 @@ const emailsStore: EmailRecord[] = [
     recipient: "alex@company.com",
     subject: "Worker error rate increased",
     snippet: "A spike in 5xx responses was detected on route /api/telegram/webhook.",
+    bodyText: "A spike in 5xx responses was detected on route /api/telegram/webhook.",
     isRead: false,
     isStarred: false,
     isArchived: false,
@@ -116,6 +124,7 @@ const emailsStore: EmailRecord[] = [
     recipient: "nadia@company.com",
     subject: "Re: Login issue after migration",
     snippet: "We still cannot sign in from the mobile app after your DNS change.",
+    bodyText: "We still cannot sign in from the mobile app after your DNS change.",
     isRead: true,
     isStarred: false,
     isArchived: false,
@@ -129,6 +138,7 @@ const emailsStore: EmailRecord[] = [
     recipient: "nadia@company.com",
     subject: "New comments on MailFlare dashboard",
     snippet: "3 comments were added to the Dashboard redesign file.",
+    bodyText: "3 comments were added to the Dashboard redesign file.",
     isRead: false,
     isStarred: false,
     isArchived: false,
@@ -142,6 +152,7 @@ const emailsStore: EmailRecord[] = [
     recipient: "rizky@company.com",
     subject: "Dependabot alert resolved",
     snippet: "The vulnerable dependency has been patched in default branch.",
+    bodyText: "The vulnerable dependency has been patched in default branch.",
     isRead: true,
     isStarred: false,
     isArchived: true,
@@ -155,6 +166,7 @@ const emailsStore: EmailRecord[] = [
     recipient: "rizky@company.com",
     subject: "Build completed successfully",
     snippet: "Preview deployment is ready for branch feature/mail-worker.",
+    bodyText: "Preview deployment is ready for branch feature/mail-worker.",
     isRead: false,
     isStarred: false,
     isArchived: false,
@@ -168,6 +180,7 @@ const emailsStore: EmailRecord[] = [
     recipient: "rizky@company.com",
     subject: "Workers platform update",
     snippet: "New runtime features are now generally available.",
+    bodyText: "New runtime features are now generally available.",
     isRead: true,
     isStarred: false,
     isArchived: false,
@@ -241,6 +254,26 @@ function patchEmail(emailId: string, action: string): EmailRecord | undefined {
   return email;
 }
 
+function deleteUser(userId: string): { ok: boolean; email?: string; deletedEmails: number } {
+  const index = usersSeed.findIndex((user) => user.id === userId);
+  if (index < 0) {
+    return { ok: false, deletedEmails: 0 };
+  }
+
+  const email = usersSeed[index].email;
+  usersSeed.splice(index, 1);
+
+  let deletedEmails = 0;
+  for (let i = emailsStore.length - 1; i >= 0; i -= 1) {
+    if (emailsStore[i].userId === userId) {
+      emailsStore.splice(i, 1);
+      deletedEmails += 1;
+    }
+  }
+
+  return { ok: true, email, deletedEmails };
+}
+
 function json<T>(body: T): T {
   return body;
 }
@@ -298,6 +331,21 @@ export async function mockApi<T>(path: string, init?: RequestInit): Promise<T> {
         totalCount: 0,
         createdAt: user.createdAt
       }
+    }) as T;
+  }
+
+  const userDeleteMatch = path.match(/^\/api\/users\/([^/]+)$/);
+  if (method === "DELETE" && userDeleteMatch) {
+    const userId = decodeURIComponent(userDeleteMatch[1]);
+    const deleted = deleteUser(userId);
+    if (!deleted.ok) {
+      throw new Error("User not found");
+    }
+    return json({
+      ok: true,
+      userId,
+      email: deleted.email,
+      deletedEmails: deleted.deletedEmails
     }) as T;
   }
 

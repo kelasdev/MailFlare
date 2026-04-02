@@ -69,6 +69,7 @@
   let newUserEmail = "";
   let newUserDisplayName = "";
   let creatingUser = false;
+  let deletingUserId = "";
   let telegramChatId = "";
   let testingTelegramConnection = false;
   let settingsDefaultTelegramChatId = "";
@@ -185,6 +186,45 @@
       errorText = error instanceof Error ? error.message : "Failed to add user";
     } finally {
       creatingUser = false;
+    }
+  }
+
+  async function deleteUserFromList(user: UserRecord): Promise<void> {
+    if (deletingUserId) return;
+    const label = user.displayName ?? user.email;
+    const confirmed = window.confirm(
+      `Hapus user ${label}?\nSemua email user ini akan ikut dihapus dari inbox MailFlare.`
+    );
+    if (!confirmed) return;
+
+    deletingUserId = user.id;
+    errorText = "";
+    feedbackText = "";
+    try {
+      const response = await api<{
+        ok: boolean;
+        userId: string;
+        email?: string;
+        deletedEmails: number;
+      }>(`/api/users/${encodeURIComponent(user.id)}`, {
+        method: "DELETE"
+      });
+
+      await loadUsers();
+      if (selectedUserId === user.id) {
+        selectedUserId = "";
+        detailEmailId = "";
+        detailEmail = null;
+        inbox = [];
+        localStorage.removeItem(SELECTED_USER_STORAGE_KEY);
+        localStorage.removeItem(SELECTED_EMAIL_STORAGE_KEY);
+      }
+
+      feedbackText = `User ${response.email ?? label} dihapus. ${response.deletedEmails} email ikut dihapus.`;
+    } catch (error) {
+      errorText = error instanceof Error ? error.message : "Failed to delete user";
+    } finally {
+      deletingUserId = "";
     }
   }
 
@@ -316,6 +356,49 @@
       .toLowerCase();
 
     return haystack.includes(needle);
+  }
+
+  function snippetForDisplay(snippet: string | null): string {
+    if (!snippet) return "-";
+    const normalized = snippet.replace(/\r\n/g, "\n").trim();
+    if (!normalized) return "-";
+
+    const lines = normalized.split("\n");
+    let index = 0;
+    while (index < lines.length && /^[A-Za-z0-9-]+:\s/.test(lines[index].trim())) {
+      index += 1;
+    }
+
+    const preferred = (index > 0 ? lines.slice(index).join(" ") : normalized).replace(/\s+/g, " ").trim();
+    if (preferred) return preferred;
+    return normalized.replace(/\s+/g, " ").trim();
+  }
+
+  function bodyTextForDisplay(email: EmailRecord | null): string {
+    if (!email) return "-";
+    const bodyText = email.bodyText?.replace(/\r\n/g, "\n").trim();
+    if (bodyText) return bodyText;
+    return snippetForDisplay(email.snippet);
+  }
+
+  function emailHtmlFrameDoc(bodyHtml: string | null | undefined): string {
+    if (!bodyHtml?.trim()) return "";
+    const withoutScripts = bodyHtml.replace(/<script[\s\S]*?<\/script>/gi, "");
+    return [
+      "<!doctype html>",
+      "<html><head><meta charset=\"utf-8\"/>",
+      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>",
+      "<style>",
+      "body{margin:0;padding:0.5rem 0;font-family:Inter,Segoe UI,sans-serif;color:#dbe6ff;background:transparent;line-height:1.5;}",
+      "a{color:#ffb46b;}",
+      "img{max-width:100%;height:auto;}",
+      "blockquote{border-left:3px solid rgba(255,146,63,0.4);margin:0.6rem 0;padding:0.1rem 0.8rem;color:#bfd0ee;}",
+      "pre{white-space:pre-wrap;word-break:break-word;}",
+      "table{max-width:100%;}",
+      "</style></head><body>",
+      withoutScripts,
+      "</body></html>"
+    ].join("");
   }
 
   function initializeMockMode(): void {
@@ -878,16 +961,27 @@
         <article class="empty">Tidak ada user yang cocok dengan pencarian.</article>
       {:else}
         {#each filteredUsers as user}
-          <button class="row row-button user-row" on:click={() => selectUser(user.id, true)}>
-            <div class="user-main">
-              <strong>{user.displayName ?? user.email}</strong>
-              <p class="muted">{user.email}</p>
-            </div>
-            <div class="user-meta">
-              <span class="pill">{user.unreadCount} unread</span>
-              <span class="muted">{user.totalCount} total</span>
-            </div>
-          </button>
+          <article class="row user-row user-row-item" class:selected={selectedUserId === user.id}>
+            <button class="user-open-btn" type="button" on:click={() => selectUser(user.id, true)}>
+              <div class="user-main">
+                <strong>{user.displayName ?? user.email}</strong>
+                <p class="muted">{user.email}</p>
+              </div>
+              <div class="user-meta">
+                <span class="pill">{user.unreadCount} unread</span>
+                <span class="muted">{user.totalCount} total</span>
+              </div>
+            </button>
+            <button
+              class="user-delete-btn"
+              type="button"
+              disabled={deletingUserId === user.id}
+              on:click={() => void deleteUserFromList(user)}
+              title={`Delete ${user.displayName ?? user.email}`}
+            >
+              {deletingUserId === user.id ? "..." : "🗑"}
+            </button>
+          </article>
         {/each}
       {/if}
     </section>
@@ -932,7 +1026,7 @@
                   <span class="inbox-date">{toShortDate(email.receivedAt)}</span>
                   <span class="inbox-subject-text">{email.subject ?? "(No Subject)"}</span>
                 </div>
-                <p class="muted inbox-preview">{email.snippet ?? "-"}</p>
+                <p class="muted inbox-preview">{snippetForDisplay(email.snippet)}</p>
               </div>
             </button>
             <div class="inbox-actions">
@@ -998,10 +1092,19 @@
           </div>
 
           <div class="gmail-body">
-            <p>{detailEmail.snippet ?? "-"}</p>
-            <p class="muted">
-              Full MIME body renderer belum diaktifkan di v1, jadi tampilan saat ini memakai snippet email untuk preview konten.
-            </p>
+            {#if detailEmail.bodyHtml?.trim()}
+              <iframe
+                class="email-html-frame"
+                sandbox=""
+                srcdoc={emailHtmlFrameDoc(detailEmail.bodyHtml)}
+                title="Email HTML Content"
+              ></iframe>
+            {/if}
+            <pre class="email-body-text">{bodyTextForDisplay(detailEmail)}</pre>
+            <details class="email-raw-details">
+              <summary>Raw MIME Source</summary>
+              <pre>{detailEmail.rawMime ?? "-"}</pre>
+            </details>
           </div>
 
           <div class="gmail-reply-row">

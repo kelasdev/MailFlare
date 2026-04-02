@@ -5,6 +5,24 @@ interface TelegramMessagePayload {
   text: string;
   parse_mode?: "Markdown" | "MarkdownV2";
   disable_web_page_preview?: boolean;
+  reply_markup?: {
+    inline_keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>>;
+  };
+}
+
+interface TelegramAnswerCallbackQueryPayload {
+  callback_query_id: string;
+  text?: string;
+  show_alert?: boolean;
+  url?: string;
+}
+
+interface TelegramEditMessageReplyMarkupPayload {
+  chat_id: string | number;
+  message_id: number;
+  reply_markup: {
+    inline_keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>>;
+  };
 }
 
 export interface TelegramWebhookInfo {
@@ -48,7 +66,7 @@ export function parseTelegramCommand(rawText: string | undefined): TelegramComma
     "start",
     "stats",
     "inbox",
-    "mail",
+    "resend",
     "read",
     "unread",
     "star",
@@ -116,4 +134,48 @@ export async function getTelegramWebhookInfo(
     throw new Error(`Telegram getWebhookInfo failed: ${parsed.description ?? "unknown error"}`);
   }
   return parsed.result;
+}
+
+export async function answerTelegramCallbackQuery(
+  botToken: string | undefined,
+  payload: TelegramAnswerCallbackQueryPayload,
+  fetchImpl: typeof fetch = fetch
+): Promise<void> {
+  if (!botToken) return;
+  const response = await fetchImpl(
+    `https://api.telegram.org/bot${botToken}/answerCallbackQuery`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Telegram answerCallbackQuery failed: ${response.status} ${body}`);
+  }
+}
+
+export async function editTelegramMessageReplyMarkup(
+  botToken: string | undefined,
+  payload: TelegramEditMessageReplyMarkupPayload,
+  fetchImpl: typeof fetch = fetch
+): Promise<void> {
+  if (!botToken) return;
+  const response = await fetchImpl(
+    `https://api.telegram.org/bot${botToken}/editMessageReplyMarkup`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Telegram editMessageReplyMarkup failed: ${response.status} ${body}`);
+  }
 }

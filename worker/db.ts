@@ -14,10 +14,16 @@ type NullableNumber = number | null;
 interface EmailRow {
   id: string;
   user_id: string;
+  message_id?: string | null;
   sender: string;
   recipient: string;
   subject: string | null;
   snippet: string | null;
+  body_text?: string | null;
+  body_html?: string | null;
+  raw_mime?: string | null;
+  headers_json?: string | null;
+  raw_size?: NullableNumber;
   is_read: number;
   is_starred: number;
   is_archived: number;
@@ -53,6 +59,10 @@ interface AccessCodeRow {
   id: string;
 }
 
+interface CountRow {
+  total: NullableNumber;
+}
+
 function asBool(value: number): boolean {
   return value === 1;
 }
@@ -61,10 +71,16 @@ function mapEmail(row: EmailRow): EmailRecord {
   return {
     id: row.id,
     userId: row.user_id,
+    messageId: row.message_id ?? null,
     sender: row.sender,
     recipient: row.recipient,
     subject: row.subject,
     snippet: row.snippet,
+    bodyText: row.body_text ?? null,
+    bodyHtml: row.body_html ?? null,
+    rawMime: row.raw_mime ?? null,
+    headersJson: row.headers_json ?? null,
+    rawSize: row.raw_size ?? null,
     isRead: asBool(row.is_read),
     isStarred: asBool(row.is_starred),
     isArchived: asBool(row.is_archived),
@@ -103,13 +119,38 @@ export async function findUserIdByEmail(db: D1Database, email: string): Promise<
   return row?.id ?? null;
 }
 
+export async function findUserIdByLookup(db: D1Database, lookup: string): Promise<string | null> {
+  const value = lookup.trim().toLowerCase();
+  if (!value) return null;
+
+  const row = await db
+    .prepare(
+      `SELECT id
+      FROM users
+      WHERE lower(id) = ?
+        OR lower(email) = ?
+        OR lower(display_name) = ?
+        OR (
+          CASE
+            WHEN instr(email, '@') > 0 THEN lower(substr(email, 1, instr(email, '@') - 1))
+            ELSE lower(email)
+          END
+        ) = ?
+      LIMIT 1`
+    )
+    .bind(value, value, value, value)
+    .first<{ id: string }>();
+
+  return row?.id ?? null;
+}
+
 export async function insertInboundEmail(
   db: D1Database,
   payload: InboundEmail & { userId: string }
 ): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO emails (id, user_id, message_id, sender, recipient, subject, snippet, received_at, raw_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO emails (id, user_id, message_id, sender, recipient, subject, snippet, received_at, raw_size, body_text, body_html, raw_mime, headers_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(
       payload.id,
@@ -120,7 +161,11 @@ export async function insertInboundEmail(
       payload.subject,
       payload.snippet,
       payload.receivedAt,
-      payload.rawSize
+      payload.rawSize,
+      payload.bodyText,
+      payload.bodyHtml,
+      payload.rawMime,
+      payload.headersJson
     )
     .run();
 }
@@ -201,6 +246,40 @@ export async function createUser(
   };
 }
 
+export async function deleteUserById(
+  db: D1Database,
+  userId: string
+): Promise<{ ok: boolean; email?: string; deletedEmails: number }> {
+  const existing = await db
+    .prepare("SELECT id, email FROM users WHERE id = ? LIMIT 1")
+    .bind(userId)
+    .first<{ id: string; email: string }>();
+
+  if (!existing?.id) {
+    return { ok: false, deletedEmails: 0 };
+  }
+
+  const emailCountRow = await db
+    .prepare("SELECT COUNT(*) AS total FROM emails WHERE user_id = ?")
+    .bind(userId)
+    .first<CountRow>();
+  const deletedEmails = toCount(emailCountRow?.total ?? 0);
+
+  await db
+    .prepare("DELETE FROM email_status_history WHERE email_id IN (SELECT id FROM emails WHERE user_id = ?)")
+    .bind(userId)
+    .run();
+
+  await db.prepare("DELETE FROM emails WHERE user_id = ?").bind(userId).run();
+  await db.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
+
+  return {
+    ok: true,
+    email: existing.email,
+    deletedEmails
+  };
+}
+
 export async function listInboxByUser(db: D1Database, userId: string): Promise<EmailRecord[]> {
   const result = await db
     .prepare(
@@ -234,6 +313,7 @@ export async function getEmailById(db: D1Database, emailId: string): Promise<Ema
   const row = await db
     .prepare(
       `SELECT id, user_id, sender, recipient, subject, snippet, is_read, is_starred, is_archived, deleted_at, received_at
+      , message_id, raw_size, body_text, body_html, raw_mime, headers_json
       FROM emails
       WHERE id = ?
       LIMIT 1`
@@ -242,6 +322,28 @@ export async function getEmailById(db: D1Database, emailId: string): Promise<Ema
     .first<EmailRow>();
 
   return row ? mapEmail(row) : null;
+}
+
+export async function findEmailIdsByPrefix(
+  db: D1Database,
+  idPrefix: string,
+  limit = 2
+): Promise<string[]> {
+  const prefix = idPrefix.trim();
+  if (!prefix) return [];
+
+  const result = await db
+    .prepare(
+      `SELECT id
+      FROM emails
+      WHERE id LIKE ?
+      ORDER BY received_at DESC
+      LIMIT ?`
+    )
+    .bind(`${prefix}%`, Math.max(1, limit))
+    .all<{ id: string }>();
+
+  return (result.results ?? []).map((row) => row.id);
 }
 
 export async function patchEmailStatus(
@@ -302,31 +404,6 @@ export async function patchEmailStatus(
     .run();
 
   return getEmailById(db, emailId);
-}
-
-export async function logTelegramEvent(
-  db: D1Database,
-  data: {
-    updateId: string | null;
-    telegramUserId: string | null;
-    command: string | null;
-    payloadJson: string;
-    status: string;
-  }
-): Promise<void> {
-  await db
-    .prepare(
-      "INSERT INTO telegram_events (id, update_id, telegram_user_id, command, payload_json, status, created_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"
-    )
-    .bind(
-      crypto.randomUUID(),
-      data.updateId,
-      data.telegramUserId,
-      data.command,
-      data.payloadJson,
-      data.status
-    )
-    .run();
 }
 
 export async function incrementMetric(

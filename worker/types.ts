@@ -13,15 +13,22 @@ export interface Env {
   TELEGRAM_ALLOWED_IDS?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   MAILFLARE_INBOUND_DOMAIN?: string;
+  MAILFLARE_PUBLIC_BASE_URL?: string;
 }
 
 export interface EmailRecord {
   id: string;
   userId: string;
+  messageId?: string | null;
   sender: string;
   recipient: string;
   subject: string | null;
   snippet: string | null;
+  bodyText?: string | null;
+  bodyHtml?: string | null;
+  rawMime?: string | null;
+  headersJson?: string | null;
+  rawSize?: number | null;
   isRead: boolean;
   isStarred: boolean;
   isArchived: boolean;
@@ -78,7 +85,7 @@ export interface TelegramCommand {
     | "start"
     | "stats"
     | "inbox"
-    | "mail"
+    | "resend"
     | "read"
     | "unread"
     | "star"
@@ -99,6 +106,10 @@ export interface InboundEmail {
   recipient: string;
   subject: string | null;
   snippet: string | null;
+  bodyText: string | null;
+  bodyHtml: string | null;
+  rawMime: string | null;
+  headersJson: string | null;
   rawSize: number | null;
   receivedAt: string;
 }
