@@ -623,10 +623,24 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
     }
 
     const text = body?.message?.trim() || `MailFlare test ping (${new Date().toISOString()})`;
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, {
-      chat_id: chatId,
-      text
-    });
+    try {
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, {
+        chat_id: chatId,
+        text
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Telegram test failed";
+      if (message.includes("401")) {
+        return jsonResponse(
+          {
+            error: "Telegram unauthorized. Cek TELEGRAM_BOT_TOKEN (kemungkinan invalid).",
+            detail: message
+          },
+          502
+        );
+      }
+      return jsonResponse({ error: "Telegram test failed", detail: message }, 502);
+    }
     await logTelegramEvent(env.mailflare_db, {
       updateId: null,
       telegramUserId: String(chatId),

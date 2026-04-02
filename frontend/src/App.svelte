@@ -317,6 +317,10 @@
         ...(init?.headers ?? {})
       }
     });
+    if (response.status === 401) {
+      window.location.href = "/auth/access-denied";
+      throw new Error("Session expired. Silakan login ulang via access code Telegram.");
+    }
     if (!response.ok) {
       const body = await response.text();
       if (body) {
