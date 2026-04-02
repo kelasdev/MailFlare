@@ -39,6 +39,7 @@ export interface RuntimeSettings {
   privateGatewayEnabled: boolean;
   telegramConfigured: boolean;
   webhookSecretConfigured: boolean;
+  inboundDomain: string;
   telegramAllowedIdsCount: number;
   telegramAllowedIds: string[];
   metrics: Record<string, number>;
@@ -309,6 +310,10 @@ export async function mockApi<T>(path: string, init?: RequestInit): Promise<T> {
       privateGatewayEnabled: true,
       telegramConfigured: true,
       webhookSecretConfigured: true,
+      inboundDomain: (import.meta.env.VITE_MAILFLARE_INBOUND_DOMAIN ?? "mx.kelasdev.my.id")
+        .trim()
+        .toLowerCase()
+        .replace(/^@+/, ""),
       telegramAllowedIdsCount: 1,
       telegramAllowedIds: ["123456789"],
       metrics: {

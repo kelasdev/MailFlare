@@ -12,6 +12,7 @@ export interface Env {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_ALLOWED_IDS?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
+  MAILFLARE_INBOUND_DOMAIN?: string;
 }
 
 export interface EmailRecord {
@@ -50,6 +51,7 @@ export interface RuntimeSettings {
   privateGatewayEnabled: boolean;
   telegramConfigured: boolean;
   webhookSecretConfigured: boolean;
+  inboundDomain: string;
   telegramAllowedIdsCount: number;
   telegramAllowedIds: string[];
   metrics: Record<string, number>;

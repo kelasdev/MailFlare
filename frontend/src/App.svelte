@@ -30,6 +30,7 @@
   const INTERNAL_PATH_STORAGE_KEY = "mailflare:internal-path";
   const SELECTED_USER_STORAGE_KEY = "mailflare:selected-user";
   const SELECTED_EMAIL_STORAGE_KEY = "mailflare:selected-email";
+  const DEFAULT_INBOUND_DOMAIN = "mx.kelasdev.my.id";
 
   const navItems: Array<{
     path: "/" | "/users" | "/settings";
@@ -58,7 +59,8 @@
 
   let selectedUserId = "";
   let detailEmailId = "";
-  let currentHost = "";
+  let inboundDomain = DEFAULT_INBOUND_DOMAIN;
+  let addUserDomain = DEFAULT_INBOUND_DOMAIN;
   let inboxSearchQuery = "";
   let userSearchQuery = "";
   let userSortMode: "az" | "created" = "az";
@@ -140,6 +142,7 @@
     newUserDisplayName = "";
     errorText = "";
     feedbackText = "";
+    void ensureInboundDomainFromRuntime();
   }
 
   function closeAddUserModal(): void {
@@ -160,7 +163,7 @@
     }
     const email = normalizeUserEmail(emailInput);
     if (!email.includes("@")) {
-      errorText = "Untuk local/dev, masukkan email lengkap (contoh: alex@example.tld).";
+      errorText = "Email belum valid. Masukkan email lengkap atau set inbound domain.";
       return;
     }
     const displayName = newUserDisplayName.trim() || undefined;
@@ -205,8 +208,38 @@
     const value = input.trim().toLowerCase();
     if (!value) return "";
     if (value.includes("@")) return value;
-    if (!currentHost || isLocalHost(currentHost)) return value;
-    return `${value}@${currentHost}`;
+    const domain = resolveInboundDomain();
+    if (domain) return `${value}@${domain}`;
+    return value;
+  }
+
+  function normalizeDomain(rawDomain: string | null | undefined): string {
+    const normalized = (rawDomain ?? "").trim().toLowerCase();
+    if (!normalized) return "";
+    return normalized.replace(/^@+/, "").replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  }
+
+  function resolveInboundDomain(): string {
+    const runtimeDomain = normalizeDomain(runtimeSettings?.inboundDomain);
+    if (runtimeDomain) return runtimeDomain;
+    return normalizeDomain(inboundDomain);
+  }
+
+  async function ensureInboundDomainFromRuntime(): Promise<void> {
+    if (normalizeDomain(runtimeSettings?.inboundDomain)) return;
+    try {
+      const runtime = await api<RuntimeSettings>("/api/settings/runtime");
+      runtimeSettings = runtime;
+      const domain = normalizeDomain(runtime.inboundDomain);
+      if (domain) inboundDomain = domain;
+    } catch {
+      // Keep using local fallback domain when runtime endpoint is unavailable.
+    }
+  }
+
+  function isLocalHost(hostname: string): boolean {
+    const host = hostname.trim().toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".localhost");
   }
 
   function unixSecondsToLocal(seconds?: number): string {
@@ -313,8 +346,7 @@
   }
 
   function detectAllowMockMode(): boolean {
-    const host = window.location.hostname;
-    return import.meta.env.DEV || host === "localhost" || host === "127.0.0.1" || host === "::1";
+    return import.meta.env.DEV || isLocalHost(window.location.hostname);
   }
 
   function initializeInternalPath(): void {
@@ -438,6 +470,8 @@
   async function loadSettings(): Promise<void> {
     health = await api<HealthResponse>("/healthz");
     runtimeSettings = await api<RuntimeSettings>("/api/settings/runtime");
+    const domain = normalizeDomain(runtimeSettings.inboundDomain);
+    if (domain) inboundDomain = domain;
     settingsDefaultTelegramChatId = runtimeSettings.stored.defaultTelegramChatId;
     settingsTelegramForwardState = runtimeSettings.stored.telegramForwardEnabled
       ? "enabled"
@@ -666,7 +700,6 @@
   }
 
   onMount(() => {
-    currentHost = window.location.hostname;
     allowMockMode = detectAllowMockMode();
     if (allowMockMode) {
       mockMode = isMockModePreferredByDefault();
@@ -678,6 +711,7 @@
 
   $: filteredInbox = inbox.filter((email) => emailMatchesQuery(email, inboxSearchQuery));
   $: filteredUsers = sortUsers(users.filter((user) => userMatchesQuery(user, userSearchQuery)));
+  $: addUserDomain = resolveInboundDomain();
 </script>
 
 <main class="shell">
@@ -709,7 +743,7 @@
           <button
             class="user-add-btn"
             type="button"
-            on:click|preventDefault|stopPropagation={openAddUserModal}
+            on:click={openAddUserModal}
             title="Add User"
           >
             <span>Add user</span>
@@ -1207,7 +1241,7 @@
           <input
             type="text"
             bind:value={newUserEmail}
-            placeholder={`contoh: alex${currentHost && !isLocalHost(currentHost) ? ` (otomatis jadi alex@${currentHost})` : " atau email lengkap"}`}
+            placeholder={`contoh: alex${addUserDomain ? ` (otomatis jadi alex@${addUserDomain})` : " atau email lengkap"}`}
             required
             autocomplete="off"
           />

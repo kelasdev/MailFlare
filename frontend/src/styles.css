@@ -113,6 +113,7 @@ a {
 
 .topbar.usersTopbar {
   align-items: center;
+  position: relative;
 }
 
 .brand {
@@ -159,6 +160,8 @@ a {
 
 .userlist-header {
   width: 100%;
+  position: relative;
+  z-index: 3;
 }
 
 .mail-header {
@@ -287,6 +290,7 @@ a {
   white-space: nowrap;
   position: relative;
   z-index: 5;
+  pointer-events: auto;
 }
 
 .user-add-btn:hover {
@@ -1764,6 +1768,11 @@ a {
   display: none;
   position: relative;
   z-index: 1;
+  pointer-events: none;
+}
+
+.nav-desktop button {
+  pointer-events: auto;
 }
 
 @media (min-width: 900px) {

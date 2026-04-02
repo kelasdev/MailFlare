@@ -107,6 +107,12 @@ function isLocalHost(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
+function normalizeInboundDomain(value: string | undefined): string {
+  const raw = (value ?? "").trim().toLowerCase();
+  if (!raw) return "";
+  return raw.replace(/^@+/, "").replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
+
 function statusActionFromInput(value: unknown): EmailStatusAction | null {
   if (
     value === "read" ||
@@ -577,6 +583,7 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
       privateGatewayEnabled: true,
       telegramConfigured: Boolean(env.TELEGRAM_BOT_TOKEN?.trim()),
       webhookSecretConfigured: Boolean(env.TELEGRAM_WEBHOOK_SECRET?.trim()),
+      inboundDomain: normalizeInboundDomain(env.MAILFLARE_INBOUND_DOMAIN),
       telegramAllowedIdsCount: allowedIds.size,
       telegramAllowedIds: Array.from(allowedIds),
       metrics,

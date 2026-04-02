@@ -12,3 +12,6 @@ binding = "mailflare_db"
 database_name = "mailflare-db"
 database_id = "ecd12fe4-ea15-4679-8e86-3a3ef37f3080"
 migrations_dir = "./migrations"
+
+[vars]
+MAILFLARE_INBOUND_DOMAIN = "mx.kelasdev.my.id"
