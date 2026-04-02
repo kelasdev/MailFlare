@@ -1,0 +1,10 @@
+{
+  "name": "MailFlare Worker Console",
+  "short_name": "MailFlare",
+  "description": "Cloudflare Worker email management PWA with Telegram bot integration",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fff8f5",
+  "theme_color": "#f48120",
+  "icons": []
+}

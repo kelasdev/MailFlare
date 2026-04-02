@@ -1,0 +1,29 @@
+{
+  "name": "mailflare",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "dev:frontend": "vite --config frontend/vite.config.ts",
+    "build": "pnpm build:frontend",
+    "build:frontend": "vite build --config frontend/vite.config.ts",
+    "preview:frontend": "vite preview --config frontend/vite.config.ts",
+    "deploy": "pnpm build && wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "jose": "^5.10.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260310.0",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@types/node": "^22.15.3",
+    "svelte": "^5.27.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.2",
+    "vitest": "^3.1.1",
+    "wrangler": "^4.9.0"
+  }
+}

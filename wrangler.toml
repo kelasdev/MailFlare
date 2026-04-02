@@ -1,0 +1,19 @@
+name = "mailflare"
+main = "worker/index.ts"
+compatibility_date = "2026-04-02"
+
+[assets]
+directory = "./frontend/dist"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "mailflare_db"
+database_name = "mailflare-db"
+database_id = "__CHANGE_ME_D1_DATABASE_ID__"
+migrations_dir = "./migrations"
+
+[vars]
+TELEGRAM_ALLOWED_IDS = ""
+TELEGRAM_WEBHOOK_SECRET = ""
+CF_ACCESS_TEAM_DOMAIN = ""
+CF_ACCESS_AUD = ""
