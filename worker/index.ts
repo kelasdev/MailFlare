@@ -48,6 +48,10 @@ function withSecurityHeaders(response: Response): Response {
   for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
     headers.set(key, value);
   }
+  const contentType = headers.get("content-type") ?? "";
+  if (contentType.includes("text/html")) {
+    headers.set("cache-control", "no-store, no-cache, must-revalidate");
+  }
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
