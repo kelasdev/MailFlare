@@ -1,4 +1,4 @@
-name = "mailflare"
+name = "mail-flare"
 main = "worker/index.ts"
 compatibility_date = "2026-04-02"
 
