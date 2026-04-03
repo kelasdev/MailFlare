@@ -20,6 +20,7 @@ import {
   listRecentEmails,
   listUsers,
   patchEmailStatus,
+  registerTelegramWebhookUpdate,
   saveStoredSettings
 } from "./db";
 import { parseInboundEmail } from "./utils/email";
@@ -90,11 +91,21 @@ function getPathSegments(pathname: string): string[] {
   return pathname.split("/").filter(Boolean);
 }
 
+function safeDecodeURIComponent(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
 function accessCodeFromPath(pathname: string): string | null {
   const segments = getPathSegments(pathname);
   if (segments.length !== 2) return null;
   if (segments[0] !== "auth") return null;
-  const candidate = decodeURIComponent(segments[1] ?? "").trim().toUpperCase();
+  const decoded = safeDecodeURIComponent(segments[1] ?? "");
+  if (decoded === null) return null;
+  const candidate = decoded.trim().toUpperCase();
   if (!/^MF-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(candidate)) {
     return null;
   }
@@ -1151,7 +1162,12 @@ function renderAccessDeniedPage(errorText?: string): string {
         const input = document.getElementById("code");
         const form = input?.form;
         if (!input || !form) return;
-        const raw = decodeURIComponent((location.hash || "").replace(/^#/, "")).trim().toUpperCase();
+        let raw = "";
+        try {
+          raw = decodeURIComponent((location.hash || "").replace(/^#/, "")).trim().toUpperCase();
+        } catch {
+          return;
+        }
         const ok = /^MF-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(raw);
         if (!ok) return;
         input.value = raw;
@@ -1328,7 +1344,8 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
     segments[0] === "api" &&
     segments[1] === "users"
   ) {
-    const userId = decodeURIComponent(segments[2]);
+    const userId = safeDecodeURIComponent(segments[2]);
+    if (userId === null) return jsonResponse({ error: "Invalid encoded path segment" }, 400);
     const deleted = await deleteUserById(env.mailflare_db, userId);
     if (!deleted.ok) {
       return jsonResponse({ error: "User not found" }, 404);
@@ -1349,7 +1366,8 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
     segments[1] === "users" &&
     segments[3] === "inbox"
   ) {
-    const userId = decodeURIComponent(segments[2]);
+    const userId = safeDecodeURIComponent(segments[2]);
+    if (userId === null) return jsonResponse({ error: "Invalid encoded path segment" }, 400);
     const inbox = await listInboxByUser(env.mailflare_db, userId);
     return jsonResponse(inbox);
   }
@@ -1365,7 +1383,8 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
     segments[0] === "api" &&
     segments[1] === "emails"
   ) {
-    const emailId = decodeURIComponent(segments[2]);
+    const emailId = safeDecodeURIComponent(segments[2]);
+    if (emailId === null) return jsonResponse({ error: "Invalid encoded path segment" }, 400);
     const email = await getEmailById(env.mailflare_db, emailId);
     if (!email) return jsonResponse({ error: "Email not found" }, 404);
     return jsonResponse(email);
@@ -1378,13 +1397,12 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
     segments[1] === "emails" &&
     segments[3] === "status"
   ) {
-    const emailId = decodeURIComponent(segments[2]);
-    const body = (await request.json().catch(() => null)) as
-      | { action?: string; actor?: string }
-      | null;
+    const emailId = safeDecodeURIComponent(segments[2]);
+    if (emailId === null) return jsonResponse({ error: "Invalid encoded path segment" }, 400);
+    const body = (await request.json().catch(() => null)) as { action?: string } | null;
     const action = statusActionFromInput(body?.action);
     if (!action) return jsonResponse({ error: "Invalid action" }, 400);
-    const actor = (body?.actor ?? "api") as string;
+    const actor = "api";
     const updated = await patchEmailStatus(env.mailflare_db, emailId, action, actor);
     if (!updated) return jsonResponse({ error: "Email not found" }, 404);
     await incrementMetric(env.mailflare_db, `email_action_${action}`);
@@ -1514,12 +1532,12 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   }
 
   const secret = env.TELEGRAM_WEBHOOK_SECRET?.trim();
-  if (secret) {
-    const headerSecret = request.headers.get("x-telegram-bot-api-secret-token");
-    const querySecret = new URL(request.url).searchParams.get("secret");
-    if (headerSecret !== secret && querySecret !== secret) {
-      return jsonResponse({ error: "Invalid webhook secret" }, 401);
-    }
+  if (!secret) {
+    return jsonResponse({ error: "TELEGRAM_WEBHOOK_SECRET is not configured" }, 500);
+  }
+  const headerSecret = request.headers.get("x-telegram-bot-api-secret-token");
+  if (headerSecret !== secret) {
+    return jsonResponse({ error: "Invalid webhook secret" }, 401);
   }
 
   const update = (await request.json().catch(() => null)) as
@@ -1528,7 +1546,7 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
         message?: {
           text?: string;
           from?: { id?: number };
-          chat?: { id?: number | string };
+          chat?: { id?: number | string; type?: string };
         };
         callback_query?: {
           id?: string;
@@ -1536,17 +1554,19 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
           from?: { id?: number };
           message?: {
             message_id?: number;
-            chat?: { id?: number | string };
+            chat?: { id?: number | string; type?: string };
           };
         };
       }
     | null;
 
   const callbackQuery = update?.callback_query;
+  const updateId = update?.update_id;
   const callbackData = callbackQuery?.data ?? "";
   const text = update?.message?.text ?? "";
   const telegramUserId = update?.message?.from?.id ?? callbackQuery?.from?.id;
   const chatId = update?.message?.chat?.id ?? callbackQuery?.message?.chat?.id ?? telegramUserId;
+  const chatType = update?.message?.chat?.type ?? callbackQuery?.message?.chat?.type ?? "";
   const callbackQueryId = callbackQuery?.id;
   const callbackMessageId = callbackQuery?.message?.message_id;
   const parsed = parseTelegramCommand(text);
@@ -1559,6 +1579,12 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   const allowed = parseAllowedIds(env.TELEGRAM_ALLOWED_IDS);
   if (!isAllowedTelegramUser(allowed, telegramUserId)) {
     return jsonResponse({ error: "Forbidden" }, 403);
+  }
+  if (Number.isInteger(updateId)) {
+    const firstSeen = await registerTelegramWebhookUpdate(env.mailflare_db, updateId as number);
+    if (!firstSeen) {
+      return jsonResponse({ ok: true, duplicate: true });
+    }
   }
 
   const send = async (messageText: string): Promise<void> =>
@@ -1700,6 +1726,12 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
         }
       });
       await incrementMetric(env.mailflare_db, "telegram_html_preview_link_sent");
+      await incrementMetric(env.mailflare_db, "telegram_webhook_ok");
+      return jsonResponse({ ok: true });
+    }
+
+    if ((parsed.command === "apikey" || parsed.command === "access") && chatType !== "private") {
+      await send("For security, command ini hanya boleh dijalankan di private chat (DM) dengan bot.");
       await incrementMetric(env.mailflare_db, "telegram_webhook_ok");
       return jsonResponse({ ok: true });
     }

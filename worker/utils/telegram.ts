@@ -106,7 +106,9 @@ export async function sendTelegramMessage(
   payload: TelegramMessagePayload,
   fetchImpl: typeof fetch = fetch
 ): Promise<void> {
-  if (!botToken) return;
+  if (!botToken) {
+    throw new Error("Telegram bot token is not configured");
+  }
   const response = await fetchImpl(
     `https://api.telegram.org/bot${botToken}/sendMessage`,
     {
@@ -154,7 +156,9 @@ export async function answerTelegramCallbackQuery(
   payload: TelegramAnswerCallbackQueryPayload,
   fetchImpl: typeof fetch = fetch
 ): Promise<void> {
-  if (!botToken) return;
+  if (!botToken) {
+    throw new Error("Telegram bot token is not configured");
+  }
   const response = await fetchImpl(
     `https://api.telegram.org/bot${botToken}/answerCallbackQuery`,
     {
@@ -176,7 +180,9 @@ export async function editTelegramMessageReplyMarkup(
   payload: TelegramEditMessageReplyMarkupPayload,
   fetchImpl: typeof fetch = fetch
 ): Promise<void> {
-  if (!botToken) return;
+  if (!botToken) {
+    throw new Error("Telegram bot token is not configured");
+  }
   const response = await fetchImpl(
     `https://api.telegram.org/bot${botToken}/editMessageReplyMarkup`,
     {
@@ -198,7 +204,9 @@ export async function editTelegramMessageText(
   payload: TelegramEditMessageTextPayload,
   fetchImpl: typeof fetch = fetch
 ): Promise<void> {
-  if (!botToken) return;
+  if (!botToken) {
+    throw new Error("Telegram bot token is not configured");
+  }
   const response = await fetchImpl(
     `https://api.telegram.org/bot${botToken}/editMessageText`,
     {

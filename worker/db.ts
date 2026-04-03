@@ -208,8 +208,8 @@ export async function listUsers(db: D1Database): Promise<UserRecord[]> {
         u.email,
         u.display_name,
         u.created_at,
-        SUM(CASE WHEN e.deleted_at IS NULL AND e.is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
-        SUM(CASE WHEN e.deleted_at IS NULL THEN 1 ELSE 0 END) AS total_count
+        SUM(CASE WHEN e.id IS NOT NULL AND e.deleted_at IS NULL AND e.is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
+        SUM(CASE WHEN e.id IS NOT NULL AND e.deleted_at IS NULL THEN 1 ELSE 0 END) AS total_count
       FROM users u
       LEFT JOIN emails e ON e.user_id = u.id
       GROUP BY u.id
@@ -272,13 +272,13 @@ export async function deleteUserById(
     .first<CountRow>();
   const deletedEmails = toCount(emailCountRow?.total ?? 0);
 
-  await db
-    .prepare("DELETE FROM email_status_history WHERE email_id IN (SELECT id FROM emails WHERE user_id = ?)")
-    .bind(userId)
-    .run();
-
-  await db.prepare("DELETE FROM emails WHERE user_id = ?").bind(userId).run();
-  await db.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
+  await db.batch([
+    db
+      .prepare("DELETE FROM email_status_history WHERE email_id IN (SELECT id FROM emails WHERE user_id = ?)")
+      .bind(userId),
+    db.prepare("DELETE FROM emails WHERE user_id = ?").bind(userId),
+    db.prepare("DELETE FROM users WHERE id = ?").bind(userId)
+  ]);
 
   return {
     ok: true,
@@ -383,32 +383,31 @@ export async function patchEmailStatus(
   };
   const toState = applyStatusAction(fromState, action);
 
-  await db
-    .prepare(
-      "UPDATE emails SET is_read = ?, is_starred = ?, is_archived = ?, deleted_at = ? WHERE id = ?"
-    )
-    .bind(
-      toState.isRead ? 1 : 0,
-      toState.isStarred ? 1 : 0,
-      toState.isArchived ? 1 : 0,
-      toState.deletedAt,
-      emailId
-    )
-    .run();
-
-  await db
-    .prepare(
-      "INSERT INTO email_status_history (id, email_id, action, actor, from_state, to_state, created_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"
-    )
-    .bind(
-      crypto.randomUUID(),
-      emailId,
-      action,
-      actor,
-      serializeState(fromState),
-      serializeState(toState)
-    )
-    .run();
+  await db.batch([
+    db
+      .prepare(
+        "UPDATE emails SET is_read = ?, is_starred = ?, is_archived = ?, deleted_at = ? WHERE id = ?"
+      )
+      .bind(
+        toState.isRead ? 1 : 0,
+        toState.isStarred ? 1 : 0,
+        toState.isArchived ? 1 : 0,
+        toState.deletedAt,
+        emailId
+      ),
+    db
+      .prepare(
+        "INSERT INTO email_status_history (id, email_id, action, actor, from_state, to_state, created_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"
+      )
+      .bind(
+        crypto.randomUUID(),
+        emailId,
+        action,
+        actor,
+        serializeState(fromState),
+        serializeState(toState)
+      )
+  ]);
 
   return getEmailById(db, emailId);
 }
@@ -588,7 +587,7 @@ export async function insertAccessCode(
 export async function consumeAccessCode(db: D1Database, codeHash: string): Promise<string | null> {
   const row = await db
     .prepare(
-      "SELECT id FROM access_codes WHERE code_hash = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP LIMIT 1"
+      "SELECT id FROM access_codes WHERE code_hash = ? AND used_at IS NULL AND unixepoch(expires_at) > unixepoch('now') LIMIT 1"
     )
     .bind(codeHash)
     .first<AccessCodeRow>();
@@ -633,9 +632,34 @@ export async function insertAccessSession(
 export async function isAccessSessionValid(db: D1Database, tokenHash: string): Promise<boolean> {
   const row = await db
     .prepare(
-      "SELECT id FROM access_sessions WHERE token_hash = ? AND expires_at > CURRENT_TIMESTAMP LIMIT 1"
+      "SELECT id FROM access_sessions WHERE token_hash = ? AND unixepoch(expires_at) > unixepoch('now') LIMIT 1"
     )
     .bind(tokenHash)
     .first<{ id: string }>();
   return Boolean(row?.id);
+}
+
+async function ensureTelegramWebhookUpdatesTable(db: D1Database): Promise<void> {
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS telegram_webhook_updates (
+        update_id INTEGER PRIMARY KEY,
+        processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`
+    )
+    .run();
+}
+
+export async function registerTelegramWebhookUpdate(
+  db: D1Database,
+  updateId: number
+): Promise<boolean> {
+  await ensureTelegramWebhookUpdatesTable(db);
+  const result = await db
+    .prepare(
+      "INSERT INTO telegram_webhook_updates (update_id, processed_at) VALUES (?, CURRENT_TIMESTAMP) ON CONFLICT(update_id) DO NOTHING"
+    )
+    .bind(updateId)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
 }

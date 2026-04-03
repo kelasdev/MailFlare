@@ -205,54 +205,77 @@ interface ExtractedEmailPayload {
   snippet: string | null;
 }
 
+interface MimeExtractState {
+  plainCandidate: string | null;
+  htmlCandidate: string | null;
+  fallbackCandidate: string | null;
+}
+
+function chooseFallback(current: string | null, next: string): string | null {
+  if (current?.trim()) return current;
+  const trimmed = next.trim();
+  return trimmed ? next : current;
+}
+
+function extractFromMimeNode(
+  contentTypeHeader: string | undefined,
+  transferEncodingHeader: string | undefined,
+  rawBody: string,
+  state: MimeExtractState
+): void {
+  const contentType = (contentTypeHeader ?? "").toLowerCase();
+  const decodedBody = decodeByTransferEncoding(rawBody, transferEncodingHeader);
+
+  if (contentType.includes("multipart/")) {
+    const boundary = parseBoundary(contentType);
+    if (!boundary) {
+      state.fallbackCandidate = chooseFallback(state.fallbackCandidate, decodedBody);
+      return;
+    }
+    const parts = parseMimeParts(decodedBody, boundary);
+    for (const part of parts) {
+      const disposition = (part.headers.get("content-disposition") ?? "").toLowerCase();
+      if (disposition.includes("attachment")) continue;
+      extractFromMimeNode(
+        part.headers.get("content-type"),
+        part.headers.get("content-transfer-encoding"),
+        part.body,
+        state
+      );
+    }
+    return;
+  }
+
+  if (!state.plainCandidate && contentType.includes("text/plain")) {
+    state.plainCandidate = decodedBody;
+    return;
+  }
+  if (!state.htmlCandidate && contentType.includes("text/html")) {
+    state.htmlCandidate = decodedBody;
+    return;
+  }
+  state.fallbackCandidate = chooseFallback(state.fallbackCandidate, decodedBody);
+}
+
 function extractEmailPayload(rawText: string): ExtractedEmailPayload {
   const { headerText, bodyText } = splitHeaderBody(rawText);
   const topHeaders = parseHeaderMap(headerText);
   const topContentType = topHeaders.get("content-type") ?? "";
   const topTransfer = topHeaders.get("content-transfer-encoding");
 
-  let plainCandidate: string | null = null;
-  let htmlCandidate: string | null = null;
-  let fallbackCandidate = decodeByTransferEncoding(bodyText, topTransfer);
+  const state: MimeExtractState = {
+    plainCandidate: null,
+    htmlCandidate: null,
+    fallbackCandidate: null
+  };
 
-  if (topContentType.toLowerCase().includes("multipart/")) {
-    const boundary = parseBoundary(topContentType);
-    if (boundary) {
-      const parts = parseMimeParts(bodyText, boundary);
-      for (const part of parts) {
-        const contentType = (part.headers.get("content-type") ?? "").toLowerCase();
-        const disposition = (part.headers.get("content-disposition") ?? "").toLowerCase();
-        if (disposition.includes("attachment")) continue;
+  extractFromMimeNode(topContentType, topTransfer, bodyText, state);
 
-        const decoded = decodeByTransferEncoding(
-          part.body,
-          part.headers.get("content-transfer-encoding")
-        );
-
-        if (!plainCandidate && contentType.includes("text/plain")) {
-          plainCandidate = decoded;
-          continue;
-        }
-        if (!htmlCandidate && contentType.includes("text/html")) {
-          htmlCandidate = decoded;
-          continue;
-        }
-        if (!plainCandidate && !htmlCandidate && decoded.trim()) {
-          fallbackCandidate = decoded;
-        }
-      }
-    }
-  } else if (topContentType.toLowerCase().includes("text/html")) {
-    htmlCandidate = fallbackCandidate;
-  } else {
-    plainCandidate = fallbackCandidate;
-  }
-
-  const bodyHtmlRaw = htmlCandidate?.trim() ? htmlCandidate : null;
+  const bodyHtmlRaw = state.htmlCandidate?.trim() ? state.htmlCandidate : null;
   const bodyTextSource =
-    plainCandidate?.trim() ||
+    state.plainCandidate?.trim() ||
     (bodyHtmlRaw ? htmlToText(bodyHtmlRaw) : "") ||
-    fallbackCandidate ||
+    state.fallbackCandidate ||
     "";
 
   const bodyTextNormalized = normalizeBodyForDisplay(bodyTextSource);
