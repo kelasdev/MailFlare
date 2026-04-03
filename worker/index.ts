@@ -1712,16 +1712,19 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
 
       await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, {
         callback_query_id: callbackQueryId,
-        text: "Preview link generated"
+        url: previewUrl
       });
-      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, {
-        chat_id: chatId,
-        disable_web_page_preview: true,
-        text: "Open HTML preview from this button:",
-        reply_markup: {
-          inline_keyboard: [[{ text: "🌐 Open Preview", url: previewUrl }]]
+      if (callbackMessageId !== undefined) {
+        try {
+          await editTelegramMessageReplyMarkup(env.TELEGRAM_BOT_TOKEN, {
+            chat_id: chatId,
+            message_id: callbackMessageId,
+            reply_markup: buildEmailActionKeyboard(resolved.email, previewUrl)
+          });
+        } catch {
+          // Ignore markup edit failure (old message/deleted message/etc).
         }
-      });
+      }
       await incrementMetric(env.mailflare_db, "telegram_html_preview_link_sent");
       await incrementMetric(env.mailflare_db, "telegram_webhook_ok");
       return jsonResponse({ ok: true });
@@ -2076,3 +2079,4 @@ export default {
     await incrementMetric(env.mailflare_db, "scheduled_runs");
   }
 } satisfies ExportedHandler<Env>;
+
