@@ -381,22 +381,58 @@
     return snippetForDisplay(email.snippet);
   }
 
+  function cssVar(name: string, fallback: string): string {
+    if (typeof window === "undefined" || typeof document === "undefined") return fallback;
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+  }
+
+  function emailThemeForFrame(): {
+    text: string;
+    muted: string;
+    accent: string;
+    line: string;
+    frameBackground: string;
+    fontFamily: string;
+  } {
+    const fontFamily =
+      typeof window !== "undefined" && typeof document !== "undefined"
+        ? getComputedStyle(document.body).fontFamily || "Inter, Segoe UI, sans-serif"
+        : "Inter, Segoe UI, sans-serif";
+
+    return {
+      text: cssVar("--text", "#dbe6ff"),
+      muted: cssVar("--muted", "#9cb0d4"),
+      accent: cssVar("--primary", "#ff923f"),
+      line: cssVar("--line", "rgba(59, 72, 97, 0.15)"),
+      frameBackground: cssVar("--surface-contrast", "rgba(2, 19, 43, 0.66)"),
+      fontFamily
+    };
+  }
+
   function emailHtmlFrameDoc(bodyHtml: string | null | undefined): string {
     if (!bodyHtml?.trim()) return "";
+    const theme = emailThemeForFrame();
     const withoutScripts = bodyHtml.replace(/<script[\s\S]*?<\/script>/gi, "");
     return [
       "<!doctype html>",
       "<html><head><meta charset=\"utf-8\"/>",
       "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>",
       "<style>",
-      "body{margin:0;padding:0.5rem 0;font-family:Inter,Segoe UI,sans-serif;color:#dbe6ff;background:transparent;line-height:1.5;}",
-      "a{color:#ffb46b;}",
+      `:root{color-scheme:light dark;}`,
+      `body{margin:0;padding:0.5rem 0;font-family:${theme.fontFamily};color:${theme.text};background:transparent !important;line-height:1.5;}`,
+      `a{color:${theme.accent};}`,
       "img{max-width:100%;height:auto;}",
-      "blockquote{border-left:3px solid rgba(255,146,63,0.4);margin:0.6rem 0;padding:0.1rem 0.8rem;color:#bfd0ee;}",
-      "pre{white-space:pre-wrap;word-break:break-word;}",
-      "table{max-width:100%;}",
+      `blockquote{border-left:3px solid ${theme.line};margin:0.6rem 0;padding:0.1rem 0.8rem;color:${theme.muted};}`,
+      "pre,code{white-space:pre-wrap;word-break:break-word;}",
+      "table{max-width:100%;border-collapse:collapse;}",
+      `td,th{border-color:${theme.line};}`,
+      `hr{border:0;border-top:1px solid ${theme.line};}`,
+      `.mailflare-theme-wrap{background:${theme.frameBackground};border-radius:10px;padding:0.6rem 0.7rem;}`,
       "</style></head><body>",
+      "<div class=\"mailflare-theme-wrap\">",
       withoutScripts,
+      "</div>",
       "</body></html>"
     ].join("");
   }
