@@ -1110,8 +1110,9 @@
                 srcdoc={emailHtmlFrameDoc(detailEmail.bodyHtml)}
                 title="Email HTML Content"
               ></iframe>
+            {:else}
+              <pre class="email-body-text">{bodyTextForDisplay(detailEmail)}</pre>
             {/if}
-            <pre class="email-body-text">{bodyTextForDisplay(detailEmail)}</pre>
             <details class="email-raw-details">
               <summary>Raw MIME Source</summary>
               <pre>{detailEmail.rawMime ?? "-"}</pre>
