@@ -798,14 +798,20 @@
 </script>
 
 <main class="shell">
-  <section class="topbar" class:usersTopbar={currentPath === "/users"}>
+  <section
+    class="topbar"
+    class:usersTopbar={currentPath === "/users"}
+    class:inboxTopbar={currentPath === "/inbox"}
+  >
     {#if currentPath === "/inbox"}
       <div class="brand brand-block mail-header">
         <div class="mail-header-row">
-          <span class="material-symbols-outlined brand-cloud-icon" aria-hidden="true">cloud</span>
-          <strong>MailFlare Mails User : {selectedUserLabel()}</strong>
-          <span class="mail-header-separator" aria-hidden="true">|</span>
-          <button class="topbar-inline-back" on:click={() => navigate("/users")}>Back to User List</button>
+          <div class="mail-header-main">
+            <span class="material-symbols-outlined brand-cloud-icon" aria-hidden="true">cloud</span>
+            <strong>MailFlare Mails User</strong>
+            <span class="mail-header-separator" aria-hidden="true">|</span>
+            <span class="mail-header-user">User: {selectedUserLabel()}</span>
+          </div>
         </div>
       </div>
     {:else if currentPath === "/email-detail"}
@@ -869,7 +875,12 @@
         </button>
       {/each}
     </nav>
-    {#if allowMockMode}
+    {#if currentPath === "/inbox"}
+      <div class="inbox-topbar-actions">
+        <button class="topbar-inline-back" on:click={() => navigate("/users")}>Back to User List</button>
+      </div>
+    {/if}
+    {#if allowMockMode && currentPath !== "/inbox"}
       <div class="mock-control">
         <span class="muted">Data: {mockMode ? "Mock" : "Live"}</span>
         <button on:click={() => setMockMode(!mockMode)}>

@@ -226,6 +226,14 @@ a {
   align-items: center;
   gap: 0.52rem;
   width: 100%;
+  min-width: 0;
+}
+
+.mail-header-main {
+  display: flex;
+  align-items: center;
+  gap: 0.52rem;
+  min-width: 0;
 }
 
 .mail-header-row strong {
@@ -233,9 +241,16 @@ a {
   font-size: 1rem;
   letter-spacing: -0.01em;
   white-space: nowrap;
+}
+
+.mail-header-user {
+  color: var(--label-text);
+  font-size: 0.9rem;
+  font-weight: 600;
+  flex: 1;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
   min-width: 0;
 }
 
@@ -243,6 +258,12 @@ a {
   color: var(--muted);
   font-weight: 600;
   line-height: 1;
+}
+
+.inbox-topbar-actions {
+  display: flex;
+  justify-self: end;
+  align-items: center;
 }
 
 .userlist-title-row {
@@ -579,6 +600,22 @@ a {
   .userlist-title-row strong,
   .readmail-user {
     font-size: 0.92rem;
+  }
+
+  .mail-header-main {
+    width: 100%;
+  }
+
+  .mail-header-separator {
+    display: none;
+  }
+
+  .mail-header-user {
+    font-size: 0.82rem;
+  }
+
+  .inbox-topbar-actions {
+    justify-self: start;
   }
 
   .topbar-inline-back {
@@ -1896,6 +1933,12 @@ a {
     row-gap: 0;
   }
 
+  .topbar.inboxTopbar {
+    grid-template-columns: minmax(380px, 1fr) auto auto;
+    align-items: center;
+    row-gap: 0;
+  }
+
   .nav-desktop {
     display: flex;
     justify-self: center;
@@ -1925,6 +1968,10 @@ a {
   }
 
   .topbar.usersTopbar .nav-desktop {
+    justify-self: center;
+  }
+
+  .topbar.inboxTopbar .nav-desktop {
     justify-self: center;
   }
 
@@ -2032,6 +2079,10 @@ a {
   }
 
   .topbar.usersTopbar {
+    grid-template-columns: minmax(520px, 1fr) auto auto;
+  }
+
+  .topbar.inboxTopbar {
     grid-template-columns: minmax(520px, 1fr) auto auto;
   }
 
