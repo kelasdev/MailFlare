@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS worker_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
