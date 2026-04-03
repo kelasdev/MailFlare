@@ -887,9 +887,6 @@ async function verifyTelegramPreviewRequest(
   const now = Math.floor(Date.now() / 1000);
   if (!Number.isFinite(exp) || exp <= now) return null;
 
-  const allowed = parseAllowedIds(env.TELEGRAM_ALLOWED_IDS);
-  if (!isAllowedTelegramUser(allowed, uid)) return null;
-
   const payload = `${uid}|${emailId}|${exp}`;
   const expected = await hmacSha256Hex(secret, payload);
   if (expected !== signature) return null;
@@ -1715,7 +1712,7 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
 
       await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, {
         callback_query_id: callbackQueryId,
-        url: previewUrl
+        text: "Preview link generated"
       });
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, {
         chat_id: chatId,
