@@ -63,6 +63,13 @@ interface CountRow {
   total: NullableNumber;
 }
 
+interface ApiKeyRow {
+  id: string;
+  name: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
 function asBool(value: number): boolean {
   return value === 1;
 }
@@ -505,6 +512,60 @@ export async function saveStoredSettings(
       .bind(item.key, item.value)
       .run();
   }
+}
+
+async function ensureApiKeysTable(db: D1Database): Promise<void> {
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS api_keys (
+        id TEXT PRIMARY KEY,
+        key_hash TEXT NOT NULL UNIQUE,
+        name TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        revoked_at TEXT
+      )`
+    )
+    .run();
+}
+
+export async function insertApiKey(
+  db: D1Database,
+  input: {
+    id: string;
+    keyHash: string;
+    name?: string | null;
+    createdBy?: string | null;
+  }
+): Promise<void> {
+  await ensureApiKeysTable(db);
+  await db
+    .prepare(
+      "INSERT INTO api_keys (id, key_hash, name, created_by, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)"
+    )
+    .bind(input.id, input.keyHash, input.name ?? null, input.createdBy ?? null)
+    .run();
+}
+
+export async function findActiveApiKeyByHash(
+  db: D1Database,
+  keyHash: string
+): Promise<{ id: string; name: string | null; createdBy: string | null; createdAt: string } | null> {
+  await ensureApiKeysTable(db);
+  const row = await db
+    .prepare(
+      "SELECT id, name, created_by, created_at FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL LIMIT 1"
+    )
+    .bind(keyHash)
+    .first<ApiKeyRow>();
+
+  if (!row?.id) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    createdBy: row.created_by,
+    createdAt: row.created_at
+  };
 }
 
 export async function insertAccessCode(

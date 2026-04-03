@@ -3,12 +3,14 @@ import {
   consumeAccessCode,
   createUser,
   deleteUserById,
+  findActiveApiKeyByHash,
   findEmailIdsByPrefix,
   findUserIdByEmail,
   getStoredSettings,
   getDashboardStats,
   getEmailById,
   incrementMetric,
+  insertApiKey,
   insertAccessCode,
   insertAccessSession,
   insertInboundEmail,
@@ -23,6 +25,7 @@ import {
 import { parseInboundEmail } from "./utils/email";
 import {
   answerTelegramCallbackQuery,
+  editTelegramMessageText,
   editTelegramMessageReplyMarkup,
   getTelegramWebhookInfo,
   isAllowedTelegramUser,
@@ -101,6 +104,7 @@ function accessCodeFromPath(pathname: string): string | null {
 function isPublicPath(pathname: string): boolean {
   return (
     pathname === "/api/telegram/webhook" ||
+    pathname === "/api/apikey/action" ||
     pathname === "/tg/preview" ||
     pathname === "/auth/access-denied" ||
     pathname === "/auth/redeem" ||
@@ -138,12 +142,28 @@ function markdownV2CodeBlock(text: string, label: string): string {
   return `\`\`\`${label}\n${sanitized}\n\`\`\``;
 }
 
+function markdownV2Escape(text: string): string {
+  return text.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, "\\$&");
+}
+
+function markdownV2Code(text: string): string {
+  const sanitized = text.replace(/\\/g, "\\\\").replace(/`/g, "\\`");
+  return "`" + sanitized + "`";
+}
+
+function markdownV2Spoiler(text: string): string {
+  return "||" + markdownV2Escape(text) + "||";
+}
+
 interface TelegramInlineKeyboard {
   inline_keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>>;
 }
 
+type UserSortDirection = "asc" | "desc";
+
 function buildEmailActionKeyboard(
-  email: Pick<EmailRecord, "id" | "isRead" | "isStarred" | "isArchived" | "deletedAt">
+  email: Pick<EmailRecord, "id" | "isRead" | "isStarred" | "isArchived" | "deletedAt">,
+  previewUrl?: string | null
 ): TelegramInlineKeyboard {
   const readAction = email.isRead ? "unread" : "read";
   const readLabel = email.isRead ? "✅ Read" : "📩 Unread";
@@ -161,14 +181,20 @@ function buildEmailActionKeyboard(
         { text: archiveLabel, callback_data: `mf:act:archive:${email.id}` },
         { text: deleteLabel, callback_data: `mf:act:delete:${email.id}` }
       ],
-      [{ text: "🌐 Preview HTML", callback_data: `mf:html:${email.id}` }]
+      previewUrl
+        ? [{ text: "🌐 Preview HTML", url: previewUrl }]
+        : [{ text: "🌐 Preview HTML", callback_data: `mf:html:${email.id}` }]
     ]
   };
 }
 
 function parseTelegramCallbackData(
   data: string
-): { kind: "action"; action: EmailStatusAction; emailId: string } | { kind: "html"; emailId: string } | null {
+):
+  | { kind: "action"; action: EmailStatusAction; emailId: string }
+  | { kind: "html"; emailId: string }
+  | { kind: "users"; sort: UserSortDirection; page: number }
+  | null {
   const trimmed = data.trim();
   if (!trimmed.startsWith("mf:")) return null;
   const parts = trimmed.split(":");
@@ -182,6 +208,12 @@ function parseTelegramCallbackData(
     const emailId = parts.slice(2).join(":").trim();
     if (!emailId) return null;
     return { kind: "html", emailId };
+  }
+  if (parts[1] === "users" && parts.length >= 4) {
+    const sort = parts[2] === "desc" ? "desc" : "asc";
+    const pageRaw = Number.parseInt(parts[3] ?? "0", 10);
+    const page = Number.isFinite(pageRaw) && pageRaw >= 0 ? pageRaw : 0;
+    return { kind: "users", sort, page };
   }
   return null;
 }
@@ -203,6 +235,105 @@ function shortEmailId(emailId: string): string {
   if (!compact) return "unknown";
   if (compact.length <= 8) return compact;
   return compact.slice(0, 8);
+}
+
+function usernameFromEmail(email: string): string {
+  const normalized = email.trim().toLowerCase();
+  const at = normalized.indexOf("@");
+  if (at <= 0) return normalized;
+  return normalized.slice(0, at);
+}
+
+function displayUserName(user: { displayName: string | null; email: string }): string {
+  const candidate = (user.displayName ?? "").trim();
+  if (candidate.length > 0) return candidate;
+  return usernameFromEmail(user.email);
+}
+
+function normalizedUserName(user: { displayName: string | null; email: string }): string {
+  return displayUserName(user).trim().toLowerCase();
+}
+
+function parseSortArg(value: string | undefined): UserSortDirection {
+  const raw = (value ?? "").trim().toLowerCase();
+  if (raw === "desc" || raw === "d" || raw === "za" || raw === "z-a") return "desc";
+  return "asc";
+}
+
+function sortUsersByName(users: Array<{ displayName: string | null; email: string }>, sort: UserSortDirection) {
+  const dir = sort === "asc" ? 1 : -1;
+  return [...users].sort((a, b) => {
+    const left = normalizedUserName(a);
+    const right = normalizedUserName(b);
+    if (left < right) return -1 * dir;
+    if (left > right) return 1 * dir;
+    return 0;
+  });
+}
+
+function buildUsersListKeyboard(
+  totalUsers: number,
+  pageSize: number,
+  sort: UserSortDirection,
+  page: number
+): TelegramInlineKeyboard | undefined {
+  if (totalUsers <= pageSize) return undefined;
+  const totalPages = Math.max(1, Math.ceil(totalUsers / pageSize));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
+  const navRow: Array<{ text: string; callback_data: string }> = [];
+  if (safePage > 0) {
+    navRow.push({ text: "⬅️ Prev", callback_data: `mf:users:${sort}:${safePage - 1}` });
+  }
+  if (safePage < totalPages - 1) {
+    navRow.push({ text: "Next ➡️", callback_data: `mf:users:${sort}:${safePage + 1}` });
+  }
+  if (navRow.length > 0) {
+    rows.push(navRow);
+  }
+
+  const nextSort: UserSortDirection = sort === "asc" ? "desc" : "asc";
+  const sortLabel = sort === "asc" ? "Sort: A-Z" : "Sort: Z-A";
+  rows.push([{ text: sortLabel, callback_data: `mf:users:${nextSort}:0` }]);
+  return rows.length > 0 ? { inline_keyboard: rows } : undefined;
+}
+
+function buildUsersListMessage(
+  users: Array<{
+    id: string;
+    email: string;
+    displayName: string | null;
+    unreadCount: number;
+    totalCount: number;
+  }>,
+  sort: UserSortDirection,
+  page: number,
+  pageSize = 5
+): { text: string; replyMarkup?: TelegramInlineKeyboard } {
+  if (users.length < 1) {
+    return { text: "*MailFlare Users*\\n\\nTidak ada user\\." };
+  }
+
+  const sorted = sortUsersByName(users, sort);
+  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const start = safePage * pageSize;
+  const current = sorted.slice(start, start + pageSize);
+
+  const lines = current.map((user, index) => {
+    const username = displayUserName(user);
+    const num = start + index + 1;
+    return [
+      `${num}\\. ${markdownV2Code(username)} \\| ${markdownV2Spoiler(user.email)}`,
+      `   unread: ${user.unreadCount} \\| total: ${user.totalCount}`
+    ].join("\n");
+  });
+
+  const header = `*MailFlare Users* \\(Page ${safePage + 1}/${totalPages}\\)`;
+  return {
+    text: [header, "", ...lines].join("\n"),
+    replyMarkup: buildUsersListKeyboard(sorted.length, pageSize, sort, safePage)
+  };
 }
 
 function codeBlockLabelFromEmailId(emailId: string): string {
@@ -289,6 +420,327 @@ async function resolveEmailByArg(
   return { email: resolved, error: null };
 }
 
+interface ApiKeyIdentity {
+  id: string;
+  name: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  rawKey: string;
+}
+
+interface ParsedApiKeyAction {
+  action: string;
+  argv: string[];
+  page: number;
+  pageSize: number;
+  maxItems: number;
+}
+
+function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed =
+    typeof value === "number" ? value : Number.parseInt(String(value ?? "").trim(), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function parseArgvInput(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((item) => String(item ?? "").trim())
+      .filter((item) => item.length > 0);
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  return [];
+}
+
+async function parseApiKeyActionPayload(request: Request): Promise<ParsedApiKeyAction | null> {
+  const body = (await request.json().catch(() => null)) as
+    | {
+        action?: string;
+        argv?: unknown;
+        page?: number;
+        pageSize?: number;
+        maxItems?: number;
+      }
+    | null;
+
+  const action = body?.action?.trim() ?? "";
+  if (!action) return null;
+
+  return {
+    action,
+    argv: parseArgvInput(body?.argv),
+    page: clampNumber(body?.page, 0, 0, 1000),
+    pageSize: clampNumber(body?.pageSize, 5, 1, 50),
+    maxItems: clampNumber(body?.maxItems, 10, 1, 100)
+  };
+}
+
+function extractApiKey(request: Request): string | null {
+  const headerValue = request.headers.get("x-api-key")?.trim();
+  if (headerValue) return headerValue;
+
+  const auth = request.headers.get("authorization")?.trim() ?? "";
+  if (/^Bearer\s+/i.test(auth)) {
+    const token = auth.replace(/^Bearer\s+/i, "").trim();
+    return token || null;
+  }
+  return null;
+}
+
+async function authenticateApiKey(request: Request, env: Env): Promise<ApiKeyIdentity | null> {
+  const rawKey = extractApiKey(request);
+  if (!rawKey) return null;
+  const hash = await hashText(rawKey);
+  const found = await findActiveApiKeyByHash(env.mailflare_db, hash);
+  if (!found) return null;
+  return { ...found, rawKey };
+}
+
+async function handleApiKeyActionRoute(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") {
+    return jsonResponse({ error: "Method not allowed" }, 405);
+  }
+
+  const apiKeyIdentity = await authenticateApiKey(request, env);
+  if (!apiKeyIdentity) {
+    return jsonResponse({ error: "Invalid API key" }, 401);
+  }
+
+  const parsedInput = await parseApiKeyActionPayload(request);
+  if (!parsedInput) {
+    return jsonResponse(
+      {
+        error: "Invalid payload",
+        usage: {
+          post: {
+            action: "listuser",
+            argv: "alex"
+          }
+        }
+      },
+      400
+    );
+  }
+
+  const commandText = `/${parsedInput.action} ${parsedInput.argv.join(" ")}`.trim();
+  const parsed = parseTelegramCommand(commandText);
+  const actor = `api-key:${apiKeyIdentity.id}`;
+
+  if (parsed.command === "unknown") {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "Unknown command",
+        supported: [
+          "start",
+          "stats",
+          "adduser",
+          "listuser",
+          "inbox",
+          "resend",
+          "access",
+          "apikey"
+        ]
+      },
+      400
+    );
+  }
+
+  if (parsed.command === "start") {
+    return jsonResponse({
+      ok: true,
+      action: "start",
+      supported: [
+        "start",
+        "stats",
+        "adduser <username>",
+        "listuser [asc|desc]",
+        "inbox [username]",
+        "resend <email_id|short_id>",
+        "access",
+        "apikey"
+      ]
+    });
+  }
+
+  if (parsed.command === "stats") {
+    const stats = await getDashboardStats(env.mailflare_db);
+    return jsonResponse({ ok: true, action: "stats", stats });
+  }
+
+  if (parsed.command === "adduser") {
+    const username = (parsed.args[0] ?? "").trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9._-]{1,31}$/.test(username)) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: "Invalid username",
+          usage: "adduser <username>",
+          rule: "2-32 chars, lowercase letters/numbers plus . _ -"
+        },
+        400
+      );
+    }
+    const domain = normalizeInboundDomain(env.MAILFLARE_INBOUND_DOMAIN);
+    if (!domain) {
+      return jsonResponse({ ok: false, error: "MAILFLARE_INBOUND_DOMAIN not configured" }, 500);
+    }
+    try {
+      const user = await createUser(env.mailflare_db, {
+        email: `${username}@${domain}`,
+        displayName: username
+      });
+      await incrementMetric(env.mailflare_db, "users_created");
+      await incrementMetric(env.mailflare_db, "api_bot_command_ok");
+      return jsonResponse({ ok: true, action: "adduser", user });
+    } catch (error) {
+      const message = error instanceof Error ? error.message.toLowerCase() : "";
+      if (message.includes("unique")) {
+        return jsonResponse({ ok: false, error: "User already exists" }, 409);
+      }
+      return jsonResponse({ ok: false, error: "Failed to create user" }, 500);
+    }
+  }
+
+  if (parsed.command === "listuser") {
+    const sort = parseSortArg(parsed.args[0]);
+    const users = sortUsersByName(await listUsers(env.mailflare_db), sort);
+    const total = users.length;
+    const pageSize = parsedInput.pageSize;
+    const page = Math.min(parsedInput.page, Math.max(0, Math.ceil(total / pageSize) - 1));
+    const start = page * pageSize;
+    const data = users.slice(start, start + pageSize).map((user) => ({
+      id: user.id,
+      username: displayUserName(user),
+      email: user.email,
+      unreadCount: user.unreadCount,
+      totalCount: user.totalCount
+    }));
+    await incrementMetric(env.mailflare_db, "api_bot_command_ok");
+    return jsonResponse({
+      ok: true,
+      action: "listuser",
+      sort,
+      page,
+      pageSize,
+      totalUsers: total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      users: data
+    });
+  }
+
+  if (parsed.command === "inbox") {
+    let rows: EmailRecord[] = [];
+    let scope: "global" | "user" = "global";
+    let userId: string | null = null;
+    if (parsed.args[0] !== undefined) {
+      userId = await findUserIdByLookup(env.mailflare_db, parsed.args[0]);
+      if (!userId) {
+        return jsonResponse({ ok: false, error: "User not found" }, 404);
+      }
+      rows = await listInboxByUser(env.mailflare_db, userId);
+      scope = "user";
+    } else {
+      rows = await listRecentEmails(env.mailflare_db);
+    }
+    const emails = rows.slice(0, parsedInput.maxItems).map((item, index) => ({
+      no: index + 1,
+      id: item.id,
+      shortId: `#${shortEmailId(item.id)}`,
+      from: item.sender,
+      to: item.recipient,
+      subject: item.subject ?? "(No Subject)",
+      snippet: item.snippet,
+      isRead: item.isRead,
+      isStarred: item.isStarred,
+      isArchived: item.isArchived,
+      receivedAt: item.receivedAt
+    }));
+    await incrementMetric(env.mailflare_db, "api_bot_command_ok");
+    return jsonResponse({
+      ok: true,
+      action: "inbox",
+      scope,
+      userId,
+      total: rows.length,
+      maxItems: parsedInput.maxItems,
+      emails
+    });
+  }
+
+  if (parsed.command === "resend") {
+    const resolved = await resolveEmailByArg(env.mailflare_db, parsed.args[0]);
+    if (!resolved.email) {
+      return jsonResponse({ ok: false, error: resolved.error ?? "Email not found" }, 404);
+    }
+    await incrementMetric(env.mailflare_db, "api_bot_command_ok");
+    return jsonResponse({
+      ok: true,
+      action: "resend",
+      email: {
+        id: resolved.email.id,
+        shortId: `#${shortEmailId(resolved.email.id)}`,
+        from: resolved.email.sender,
+        to: resolved.email.recipient,
+        subject: resolved.email.subject ?? "(No Subject)",
+        bodyPreview: previewText(resolved.email, 600),
+        receivedAt: resolved.email.receivedAt
+      }
+    });
+  }
+
+  if (parsed.command === "access") {
+    const accessCode = generateAccessCode();
+    await insertAccessCode(env.mailflare_db, {
+      id: crypto.randomUUID(),
+      codeHash: await hashText(accessCode),
+      telegramUserId: actor,
+      expiresAt: expiresAtIso(ACCESS_CODE_TTL_HOURS)
+    });
+    await incrementMetric(env.mailflare_db, "private_access_code_created");
+    await incrementMetric(env.mailflare_db, "api_bot_command_ok");
+    const baseUrl = new URL(request.url).origin;
+    return jsonResponse({
+      ok: true,
+      action: "access",
+      accessCode,
+      quickOpenUrl: `${baseUrl}/auth/${accessCode}`,
+      validHours: ACCESS_CODE_TTL_HOURS,
+      oneTimeUse: true
+    });
+  }
+
+  if (parsed.command === "apikey") {
+    const apiKey = generateApiKey();
+    const newId = crypto.randomUUID();
+    await insertApiKey(env.mailflare_db, {
+      id: newId,
+      keyHash: await hashText(apiKey),
+      name: "api-generated",
+      createdBy: actor
+    });
+    await incrementMetric(env.mailflare_db, "api_keys_created");
+    await incrementMetric(env.mailflare_db, "api_bot_command_ok");
+    return jsonResponse({
+      ok: true,
+      action: "apikey",
+      apiKeyId: newId,
+      apiKey,
+      note: "Store this key now. It is not retrievable later."
+    });
+  }
+
+  if (parsed.command === "reply") {
+    return jsonResponse({ ok: false, error: "Command reply is disabled in v1" }, 400);
+  }
+
+  return jsonResponse({ ok: false, error: "Unsupported command" }, 400);
+}
+
 function parseCookies(request: Request): Map<string, string> {
   const raw = request.headers.get("cookie");
   const map = new Map<string, string>();
@@ -318,6 +770,10 @@ function randomString(length: number): string {
 
 function generateAccessCode(): string {
   return `MF-${randomString(4)}-${randomString(4)}-${randomString(4)}`;
+}
+
+function generateApiKey(): string {
+  return `mfk_${randomString(8).toLowerCase()}_${randomString(24).toLowerCase()}`;
 }
 
 async function hashText(input: string): Promise<string> {
@@ -389,6 +845,17 @@ async function buildTelegramPreviewUrl(
   url.searchParams.set("exp", String(expiresAt));
   url.searchParams.set("sig", signature);
   return url.toString();
+}
+
+async function buildPreviewUrlForUser(
+  env: Env,
+  fallbackOrigin: string | undefined,
+  telegramUserId: string,
+  emailId: string
+): Promise<string | null> {
+  const baseUrl = resolvePreviewBaseUrl(env, fallbackOrigin);
+  if (!baseUrl) return null;
+  return buildTelegramPreviewUrl(env, baseUrl, telegramUserId, emailId);
 }
 
 async function verifyTelegramPreviewRequest(
@@ -816,6 +1283,10 @@ async function handleApiRoutes(request: Request, env: Env): Promise<Response> {
   const { pathname } = url;
   const segments = getPathSegments(pathname);
 
+  if (pathname === "/api/apikey/action") {
+    return handleApiKeyActionRoute(request, env);
+  }
+
   if (request.method === "GET" && pathname === "/api/dashboard/stats") {
     const stats = await getDashboardStats(env.mailflare_db);
     return jsonResponse(stats);
@@ -1095,6 +1566,13 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
       chat_id: chatId,
       text: messageText
     });
+  const sendMarkdownV2 = async (messageText: string): Promise<void> =>
+    sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, {
+      chat_id: chatId,
+      parse_mode: "MarkdownV2",
+      disable_web_page_preview: true,
+      text: messageText
+    });
 
   try {
     if (callbackData) {
@@ -1107,6 +1585,32 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
           callback_query_id: callbackQueryId,
           text: "Unsupported action"
         });
+        return jsonResponse({ ok: true });
+      }
+
+      if (parsedCallback.kind === "users") {
+        if (callbackMessageId === undefined) {
+          await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, {
+            callback_query_id: callbackQueryId,
+            text: "Message not editable"
+          });
+          return jsonResponse({ ok: true });
+        }
+
+        const users = await listUsers(env.mailflare_db);
+        const page = buildUsersListMessage(users, parsedCallback.sort, parsedCallback.page, 5);
+        await editTelegramMessageText(env.TELEGRAM_BOT_TOKEN, {
+          chat_id: chatId,
+          message_id: callbackMessageId,
+          parse_mode: "MarkdownV2",
+          disable_web_page_preview: true,
+          text: page.text,
+          reply_markup: page.replyMarkup
+        });
+        await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, {
+          callback_query_id: callbackQueryId
+        });
+        await incrementMetric(env.mailflare_db, "telegram_webhook_ok");
         return jsonResponse({ ok: true });
       }
 
@@ -1137,10 +1641,16 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
         await incrementMetric(env.mailflare_db, `telegram_action_${parsedCallback.action}`);
         if (callbackMessageId !== undefined) {
           try {
+            const previewUrl = await buildPreviewUrlForUser(
+              env,
+              webhookOrigin,
+              String(telegramUserId),
+              updated.id
+            );
             await editTelegramMessageReplyMarkup(env.TELEGRAM_BOT_TOKEN, {
               chat_id: chatId,
               message_id: callbackMessageId,
-              reply_markup: buildEmailActionKeyboard(updated)
+              reply_markup: buildEmailActionKeyboard(updated, previewUrl)
             });
           } catch {
             // Ignore markup edit failure (old message/deleted message/etc).
@@ -1163,25 +1673,16 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
         return jsonResponse({ ok: true });
       }
 
-      const previewBaseUrl = resolvePreviewBaseUrl(env, webhookOrigin);
-      if (!previewBaseUrl) {
-        await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, {
-          callback_query_id: callbackQueryId,
-          text: "Preview URL is not configured"
-        });
-        return jsonResponse({ ok: true });
-      }
-
-      const previewUrl = await buildTelegramPreviewUrl(
+      const previewUrl = await buildPreviewUrlForUser(
         env,
-        previewBaseUrl,
+        webhookOrigin,
         String(telegramUserId),
         resolved.email.id
       );
       if (!previewUrl) {
         await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, {
           callback_query_id: callbackQueryId,
-          text: "Preview token is not available"
+          text: "Preview URL is not configured"
         });
         return jsonResponse({ ok: true });
       }
@@ -1212,14 +1713,11 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
           "Supported:",
           "/start",
           "/stats",
+          "/adduser <username>",
+          "/listuser [asc|desc]",
           "/inbox [username]",
+          "/apikey",
           "/resend <email_id>",
-          "/read <email_id>",
-          "/unread <email_id>",
-          "/star <email_id>",
-          "/unstar <email_id>",
-          "/archive <email_id>",
-          "/delete <email_id>",
           "/access"
         ].join("\n")
       );
@@ -1236,6 +1734,72 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
           `Deleted: ${stats.deletedEmails}`
         ].join("\n")
       );
+    } else if (parsed.command === "adduser") {
+      const username = (parsed.args[0] ?? "").trim().toLowerCase();
+      if (!/^[a-z0-9][a-z0-9._-]{1,31}$/.test(username)) {
+        await send(
+          "Usage: /adduser <username>\nFormat username: huruf/angka dan boleh . _ - (2-32 chars)."
+        );
+        await incrementMetric(env.mailflare_db, "telegram_webhook_ok");
+        return jsonResponse({ ok: true });
+      }
+
+      const domain = normalizeInboundDomain(env.MAILFLARE_INBOUND_DOMAIN);
+      if (!domain) {
+        await send("MAILFLARE_INBOUND_DOMAIN belum dikonfigurasi.");
+        await incrementMetric(env.mailflare_db, "telegram_webhook_ok");
+        return jsonResponse({ ok: true });
+      }
+      const email = `${username}@${domain}`;
+      try {
+        const created = await createUser(env.mailflare_db, {
+          email,
+          displayName: username
+        });
+        await incrementMetric(env.mailflare_db, "users_created");
+        await sendMarkdownV2(
+          [
+            "*User created*",
+            `Username: ${markdownV2Code(username)}`,
+            `Email: ${markdownV2Spoiler(created.email)}`
+          ].join("\n")
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message.toLowerCase() : "";
+        if (message.includes("unique")) {
+          await send("User already exists.");
+        } else {
+          await send("Failed to add user.");
+        }
+      }
+    } else if (parsed.command === "listuser") {
+      const sort = parseSortArg(parsed.args[0]);
+      const users = await listUsers(env.mailflare_db);
+      const page = buildUsersListMessage(users, sort, 0, 5);
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, {
+        chat_id: chatId,
+        parse_mode: "MarkdownV2",
+        disable_web_page_preview: true,
+        text: page.text,
+        reply_markup: page.replyMarkup
+      });
+    } else if (parsed.command === "apikey") {
+      const apiKey = generateApiKey();
+      await insertApiKey(env.mailflare_db, {
+        id: crypto.randomUUID(),
+        keyHash: await hashText(apiKey),
+        name: "telegram-generated",
+        createdBy: String(telegramUserId)
+      });
+      await incrementMetric(env.mailflare_db, "api_keys_created");
+      await sendMarkdownV2(
+        [
+          "*MailFlare API Key*",
+          "",
+          "Copy now \\(shown once\\):",
+          markdownV2Code(apiKey)
+        ].join("\n")
+      );
     } else if (parsed.command === "inbox") {
       let rows: EmailRecord[] = [];
       if (parsed.args[0] !== undefined) {
@@ -1249,11 +1813,15 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
       } else {
         rows = await listRecentEmails(env.mailflare_db);
       }
-      const lines = rows.slice(0, 10).map((item) => {
+      const lines = rows.slice(0, 10).map((item, index) => {
         const subject = item.subject?.trim() || "(No Subject)";
-        return `- ${item.id}: ${subject}`;
+        const sender = item.sender?.trim() || "-";
+        return [
+          `${index + 1}\\. ${markdownV2Code(`#${shortEmailId(item.id)}`)} \\| *From:* ${markdownV2Spoiler(sender)}`,
+          `   *Subject:* ${markdownV2Escape(subject)}`
+        ].join("\n");
       });
-      await send(lines.length > 0 ? lines.join("\n") : "Inbox kosong.");
+      await sendMarkdownV2(lines.length > 0 ? lines.join("\n") : "Inbox kosong\\.");
     } else if (parsed.command === "resend") {
       if (!parsed.args[0]) {
         await send("Usage: /resend <email_id>");
@@ -1262,46 +1830,20 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
         if (!resolved.email) {
           await send(resolved.error ?? "Email not found.");
         } else {
+          const previewUrl = await buildPreviewUrlForUser(
+            env,
+            webhookOrigin,
+            String(telegramUserId),
+            resolved.email.id
+          );
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, {
             chat_id: chatId,
             parse_mode: "MarkdownV2",
             disable_web_page_preview: true,
             text: inboundAlertMarkdownFromRecord(resolved.email),
-            reply_markup: buildEmailActionKeyboard(resolved.email)
+            reply_markup: buildEmailActionKeyboard(resolved.email, previewUrl)
           });
           await incrementMetric(env.mailflare_db, "telegram_resend_sent");
-        }
-      }
-    } else if (
-      parsed.command === "read" ||
-      parsed.command === "unread" ||
-      parsed.command === "star" ||
-      parsed.command === "unstar" ||
-      parsed.command === "archive" ||
-      parsed.command === "delete"
-    ) {
-      if (!parsed.args[0]) {
-        await send(`Usage: /${parsed.command} <email_id>`);
-      } else {
-        const resolved = await resolveEmailByArg(env.mailflare_db, parsed.args[0]);
-        if (!resolved.email) {
-          await send(resolved.error ?? "Email not found.");
-          await incrementMetric(env.mailflare_db, "telegram_action_not_found");
-          await incrementMetric(env.mailflare_db, "telegram_webhook_ok");
-          return jsonResponse({ ok: true });
-        }
-        const emailId = resolved.email.id;
-        const updated = await patchEmailStatus(
-          env.mailflare_db,
-          emailId,
-          parsed.command,
-          "telegram-bot"
-        );
-        if (!updated) {
-          await send("Email not found.");
-        } else {
-          await incrementMetric(env.mailflare_db, `telegram_action_${parsed.command}`);
-          await send(`Action ${parsed.command} applied to ${emailId}.`);
         }
       }
     } else if (parsed.command === "access") {
@@ -1340,14 +1882,11 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
           "Supported:",
           "/start",
           "/stats",
+          "/adduser <username>",
+          "/listuser [asc|desc]",
           "/inbox [username]",
+          "/apikey",
           "/resend <email_id>",
-          "/read <email_id>",
-          "/unread <email_id>",
-          "/star <email_id>",
-          "/unstar <email_id>",
-          "/archive <email_id>",
-          "/delete <email_id>",
           "/access"
         ].join("\n")
       );
@@ -1486,16 +2025,21 @@ export default {
     }
     const alertText = inboundAlertMarkdown(parsed);
 
+    const previewBaseUrl = resolvePreviewBaseUrl(env, undefined);
     await Promise.allSettled(
-      targetChatIds.map((chatId) =>
-        sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, {
+      targetChatIds.map(async (chatId) => {
+        const previewUrl =
+          previewBaseUrl !== null
+            ? await buildTelegramPreviewUrl(env, previewBaseUrl, String(chatId), parsed.id)
+            : null;
+        return sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, {
           chat_id: chatId,
           parse_mode: "MarkdownV2",
           disable_web_page_preview: true,
           text: alertText,
-          reply_markup: storedEmail ? buildEmailActionKeyboard(storedEmail) : undefined
-        })
-      )
+          reply_markup: storedEmail ? buildEmailActionKeyboard(storedEmail, previewUrl) : undefined
+        });
+      })
     );
   },
 

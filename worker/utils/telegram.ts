@@ -25,6 +25,17 @@ interface TelegramEditMessageReplyMarkupPayload {
   };
 }
 
+interface TelegramEditMessageTextPayload {
+  chat_id: string | number;
+  message_id: number;
+  text: string;
+  parse_mode?: "Markdown" | "MarkdownV2";
+  disable_web_page_preview?: boolean;
+  reply_markup?: {
+    inline_keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>>;
+  };
+}
+
 export interface TelegramWebhookInfo {
   url: string;
   has_custom_certificate: boolean;
@@ -62,27 +73,29 @@ export function parseTelegramCommand(rawText: string | undefined): TelegramComma
   const commandName = commandToken.split("@")[0] ?? commandToken;
   const args = parts.slice(1);
 
+  const aliases: Record<string, TelegramCommand["command"]> = {
+    listuse: "listuser"
+  };
+  const canonicalCommand = aliases[commandName] ?? commandName;
+
   const known = new Set([
     "start",
     "stats",
     "inbox",
+    "adduser",
+    "listuser",
+    "apikey",
     "resend",
-    "read",
-    "unread",
-    "star",
-    "unstar",
-    "archive",
-    "delete",
     "access",
     "reply"
   ]);
 
-  if (!known.has(commandName)) {
+  if (!known.has(canonicalCommand)) {
     return { command: "unknown", args, raw: text };
   }
 
   return {
-    command: commandName as TelegramCommand["command"],
+    command: canonicalCommand as TelegramCommand["command"],
     args,
     raw: text
   };
@@ -177,5 +190,27 @@ export async function editTelegramMessageReplyMarkup(
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`Telegram editMessageReplyMarkup failed: ${response.status} ${body}`);
+  }
+}
+
+export async function editTelegramMessageText(
+  botToken: string | undefined,
+  payload: TelegramEditMessageTextPayload,
+  fetchImpl: typeof fetch = fetch
+): Promise<void> {
+  if (!botToken) return;
+  const response = await fetchImpl(
+    `https://api.telegram.org/bot${botToken}/editMessageText`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Telegram editMessageText failed: ${response.status} ${body}`);
   }
 }
